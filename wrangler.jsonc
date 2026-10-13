@@ -1,0 +1,19 @@
+
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bimmaportal",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-13",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bimma-absensi-db",
+      "database_id": "dd5dbf9a-56c0-4ee0-85df-a698c7c99e56"
+    }
+  ]
+}
