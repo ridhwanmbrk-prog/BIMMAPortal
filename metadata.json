@@ -1,0 +1,10 @@
+{
+  "name": "Remix Remix Remix Remix BIMMA Attendance - UNISA Bandung",
+  "description": "Sistem Informasi Presensi Kegiatan BIMMA (Bimbingan Mahasiswa) Pesantren Mahasiswa (PESMA) Universitas 'Aisyiyah Bandung. Alamat: Jl. Terusan Rancagoong II No.1, Gumuruh, Kec. Batununggal, Kota Bandung, Jawa Barat 40275.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
