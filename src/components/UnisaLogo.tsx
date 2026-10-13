@@ -14,36 +14,46 @@ export const UnisaLogo: React.FC<UnisaLogoProps> = ({
   showText = false,
   inverted = false,
 }) => {
-  return (
-    <div className={`inline-flex items-center gap-2.5 ${className}`}>
-      <img
-        src="/images/logo%20BIMMA.png"
-        alt="Logo BIMMA"
-        width={size}
-        height={size}
-        className="shrink-0 object-contain"
-      />
+  const logo = React.createElement('img', {
+    src: '/images/logo%20BIMMA.png',
+    alt: 'Logo BIMMA',
+    width: size,
+    height: size,
+    className: 'shrink-0 object-contain',
+  });
 
-      {showText && (
-        <div className="flex flex-col leading-tight">
-          <span
-            className={`font-black text-xs sm:text-sm tracking-tight ${
+  const text = showText
+    ? React.createElement(
+        'div',
+        { className: 'flex flex-col leading-tight' },
+        React.createElement(
+          'span',
+          {
+            className: `font-black text-xs sm:text-sm tracking-tight ${
               inverted ? 'text-white' : 'text-slate-900'
-            }`}
-          >
-            UNIVERSITAS ‘AISYIYAH
-          </span>
-
-          <span
-            className={`text-[10px] font-extrabold tracking-wider uppercase ${
+            }`,
+          },
+          'UNIVERSITAS ‘AISYIYAH'
+        ),
+        React.createElement(
+          'span',
+          {
+            className: `text-[10px] font-extrabold tracking-wider uppercase ${
               inverted ? 'text-emerald-200' : 'text-emerald-700'
-            }`}
-          >
-            BANDUNG • PESMA BIMMA
-          </span>
-        </div>
-      )}
-    </div>
+            }`,
+          },
+          'BANDUNG • PESMA BIMMA'
+        )
+      )
+    : null;
+
+  return React.createElement(
+    'div',
+    { className: `inline-flex items-center gap-2.5 ${className}` },
+    logo,
+    text
   );
 };
+
+export default UnisaLogo;
 ```
