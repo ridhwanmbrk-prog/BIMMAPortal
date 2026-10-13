@@ -8,12 +8,12 @@ interface UnisaLogoProps {
   inverted?: boolean;
 }
 
-export const UnisaLogo: React.FC<UnisaLogoProps> = (props) => {
-  const className = props.className || '';
-  const size = props.size || 40;
-  const showText = props.showText || false;
-  const inverted = props.inverted || false;
-
+const UnisaLogo: React.FC<UnisaLogoProps> = ({
+  className = '',
+  size = 40,
+  showText = false,
+  inverted = false,
+}) => {
   const wrapperClass = [
     'inline-flex',
     'items-center',
@@ -66,5 +66,6 @@ export const UnisaLogo: React.FC<UnisaLogoProps> = (props) => {
   );
 };
 
+export { UnisaLogo };
 export default UnisaLogo;
 ```
