@@ -1,71 +1,51 @@
-```tsx
 import React from 'react';
 
-interface UnisaLogoProps {
+export interface UnisaLogoProps {
   className?: string;
   size?: number;
   showText?: boolean;
   inverted?: boolean;
 }
 
-const UnisaLogo: React.FC<UnisaLogoProps> = ({
+export function UnisaLogo({
   className = '',
   size = 40,
   showText = false,
   inverted = false,
-}) => {
-  const wrapperClass = [
-    'inline-flex',
-    'items-center',
-    'gap-2.5',
-    className,
-  ].filter(Boolean).join(' ');
+}: UnisaLogoProps) {
+  return (
+    <div className={'inline-flex items-center gap-2.5 ' + className}>
+      <img
+        src="/images/logo%20BIMMA.png"
+        alt="Logo BIMMA"
+        width={size}
+        height={size}
+        className="shrink-0 object-contain"
+      />
 
-  const titleClass = [
-    'font-black',
-    'text-xs',
-    'sm:text-sm',
-    'tracking-tight',
-    inverted ? 'text-white' : 'text-slate-900',
-  ].join(' ');
+      {showText && (
+        <div className="flex flex-col leading-tight">
+          <span
+            className={
+              'font-black text-xs sm:text-sm tracking-tight ' +
+              (inverted ? 'text-white' : 'text-slate-900')
+            }
+          >
+            UNIVERSITAS ‘AISYIYAH
+          </span>
 
-  const subtitleClass = [
-    'text-[10px]',
-    'font-extrabold',
-    'tracking-wider',
-    'uppercase',
-    inverted ? 'text-emerald-200' : 'text-emerald-700',
-  ].join(' ');
-
-  return React.createElement(
-    'div',
-    { className: wrapperClass },
-    React.createElement('img', {
-      src: '/images/logo%20BIMMA.png',
-      alt: 'Logo BIMMA',
-      width: size,
-      height: size,
-      className: 'shrink-0 object-contain',
-    }),
-    showText
-      ? React.createElement(
-          'div',
-          { className: 'flex flex-col leading-tight' },
-          React.createElement(
-            'span',
-            { className: titleClass },
-            'UNIVERSITAS ‘AISYIYAH'
-          ),
-          React.createElement(
-            'span',
-            { className: subtitleClass },
-            'BANDUNG • PESMA BIMMA'
-          )
-        )
-      : null
+          <span
+            className={
+              'text-[10px] font-extrabold tracking-wider uppercase ' +
+              (inverted ? 'text-emerald-200' : 'text-emerald-700')
+            }
+          >
+            BANDUNG • PESMA BIMMA
+          </span>
+        </div>
+      )}
+    </div>
   );
-};
+}
 
-export { UnisaLogo };
 export default UnisaLogo;
-```
