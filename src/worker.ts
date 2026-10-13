@@ -1,6 +1,18 @@
+export interface D1Statement {
+  first<T = Record<string, unknown>>(columnName?: string): Promise<T | null>;
+}
+
+export interface D1Binding {
+  prepare(query: string): D1Statement;
+}
+
+export interface AssetBinding {
+  fetch(request: Request): Promise<Response>;
+}
+
 export interface Env {
-  DB: D1Database;
-  ASSETS: Fetcher;
+  DB: D1Binding;
+  ASSETS: AssetBinding;
 }
 
 const json = (data: unknown, status = 200): Response =>
@@ -58,4 +70,4 @@ export default {
 
     return env.ASSETS.fetch(request);
   },
-} satisfies ExportedHandler<Env>;
+};
