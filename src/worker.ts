@@ -21,11 +21,21 @@ const MAX_BODY_BYTES = 1_000_000;
 
 const encoder = new TextEncoder();
 
+const ALLOWED_ATTENDANCE_STATUSES = [
+  'HADIR',
+  'IZIN',
+  'SAKIT',
+  'ALFA',
+  'TERLAMBAT',
+  'DISPENSASI',
+];
+
 function json(data: unknown, status = 200, origin = ''): Response {
   const headers = new Headers({
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
   });
 
   if (origin) {
@@ -35,10 +45,7 @@ function json(data: unknown, status = 200, origin = ''): Response {
       'Access-Control-Allow-Headers',
       'Content-Type, Authorization',
     );
-    headers.set(
-      'Access-Control-Allow-Methods',
-      'GET, POST, OPTIONS',
-    );
+    headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   }
 
   return new Response(JSON.stringify(data), { status, headers });
@@ -83,11 +90,13 @@ async function sha256(value: string): Promise<string> {
     'SHA-256',
     encoder.encode(value),
   );
+
   return base64Url(new Uint8Array(digest));
 }
 
 async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16);
+
   const key = await crypto.subtle.importKey(
     'raw',
     encoder.encode(password),
@@ -121,7 +130,6 @@ async function verifyPassword(
 ): Promise<{ valid: boolean; upgradedHash?: string }> {
   if (!stored) return { valid: false };
 
-  // Verify modern PBKDF2 hashes.
   if (stored.startsWith('pbkdf2$')) {
     try {
       const [, iterationsText, saltText, expectedText] = stored.split('$');
@@ -164,6 +172,7 @@ async function verifyPassword(
       }
 
       let difference = 0;
+
       for (let i = 0; i < actual.length; i++) {
         difference |= actual[i] ^ expected[i];
       }
@@ -174,8 +183,8 @@ async function verifyPassword(
     }
   }
 
-  // Temporary compatibility for legacy plaintext records.
-  // A successful login upgrades the stored value to PBKDF2.
+  // Kompatibilitas sementara untuk kata sandi lama yang masih plaintext.
+  // Login berhasil akan menggantinya dengan hash PBKDF2.
   if (stored === password) {
     return {
       valid: true,
@@ -190,9 +199,9 @@ function safeUser(row: any): Record<string, unknown> {
   return {
     id: row.id,
     username: row.username,
-    namaLengkap: row.nama_lengkap ?? row.username,
+    namaLengkap: row.username,
     role: row.role,
-    gender: row.gender ?? '',
+    gender: '',
     statusAktif: row.status === 'AKTIF',
   };
 }
@@ -274,8 +283,24 @@ function mapPembenaran(row: any): Record<string, unknown> {
   };
 }
 
+function safeJson(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value || '{}');
+
+    return parsed &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 async function readBody(request: Request): Promise<any> {
-  const contentLength = Number(request.headers.get('Content-Length') ?? 0);
+  const contentLength = Number(
+    request.headers.get('Content-Length') ?? 0,
+  );
 
   if (contentLength > MAX_BODY_BYTES) {
     throw new Error('Ukuran permintaan terlalu besar.');
@@ -302,6 +327,7 @@ async function createSession(
 ): Promise<{ token: string; expiresAt: string }> {
   const token = base64Url(randomBytes(32));
   const tokenHash = await sha256(token);
+
   const expiresAt = new Date(
     Date.now() + SESSION_HOURS * 60 * 60 * 1000,
   ).toISOString();
@@ -336,11 +362,7 @@ async function authenticate(
   const tokenHash = await sha256(match[1]);
 
   const session = await env.DB.prepare(`
-    SELECT
-      s.id,
-      s.user_id,
-      s.peserta_id,
-      s.role
+    SELECT s.id, s.user_id, s.peserta_id, s.role
     FROM sessions s
     LEFT JOIN users u ON u.id = s.user_id
     LEFT JOIN peserta p ON p.id = s.peserta_id
@@ -348,9 +370,13 @@ async function authenticate(
       AND s.revoked_at IS NULL
       AND s.expires_at > ?
       AND (
-        (s.user_id IS NOT NULL AND u.status = 'AKTIF')
+        (s.user_id IS NOT NULL
+          AND u.status = 'AKTIF'
+          AND u.role = s.role)
         OR
-        (s.peserta_id IS NOT NULL AND p.status = 'AKTIF')
+        (s.peserta_id IS NOT NULL
+          AND p.status = 'AKTIF'
+          AND s.role = 'PESERTA')
       )
     LIMIT 1
   `)
@@ -389,7 +415,7 @@ async function audit(
       )
       .run();
   } catch {
-    // Kegagalan audit tidak boleh mengubah hasil transaksi utama.
+    // Audit gagal tidak membocorkan detail database ke klien.
   }
 }
 
@@ -399,16 +425,21 @@ async function login(
   origin: string,
 ): Promise<Response> {
   const key = String(body?.key ?? '').trim();
-  const password = typeof body?.password === 'string' ? body.password : '';
+  const password =
+    typeof body?.password === 'string' ? body.password : '';
 
   if (!key) {
-    return errorResponse('NIM atau username wajib diisi.', 400, origin);
+    return errorResponse(
+      'NIM atau username wajib diisi.',
+      400,
+      origin,
+    );
   }
 
-  // Staff login requires both username and password.
+  // Login admin/petugas wajib menggunakan username dan kata sandi.
   if (password) {
     const row = await env.DB.prepare(`
-      SELECT id, username, password_hash, nama_lengkap, role, status
+      SELECT id, username, password_hash, role, status
       FROM users
       WHERE (username = ? OR id = ?)
         AND role IN ('ADMIN', 'PETUGAS')
@@ -419,13 +450,24 @@ async function login(
       .first<any>();
 
     if (!row) {
-      return errorResponse('Username atau kata sandi tidak valid.', 401, origin);
+      return errorResponse(
+        'Username atau kata sandi tidak valid.',
+        401,
+        origin,
+      );
     }
 
-    const verification = await verifyPassword(password, row.password_hash);
+    const verification = await verifyPassword(
+      password,
+      row.password_hash,
+    );
 
     if (!verification.valid) {
-      return errorResponse('Username atau kata sandi tidak valid.', 401, origin);
+      return errorResponse(
+        'Username atau kata sandi tidak valid.',
+        401,
+        origin,
+      );
     }
 
     if (verification.upgradedHash) {
@@ -438,7 +480,13 @@ async function login(
         .run();
     }
 
-    const session = await createSession(env, row.role, row.id, null);
+    const session = await createSession(
+      env,
+      row.role,
+      row.id,
+      null,
+    );
+
     await audit(env, row.id, 'LOGIN', 'users', row.id);
 
     return json(
@@ -453,11 +501,11 @@ async function login(
     );
   }
 
-  // Participant login by NIM/ID is intentionally limited to the
-  // participant's own dashboard. NIM is an identifier, not a secret.
+  // Login peserta dengan NIM/ID hanya memberi akses ke portal peserta.
+  // NIM bukan kata sandi dan tidak cukup untuk operasi sensitif.
   const peserta = await env.DB.prepare(`
-    SELECT id, nim, nama, jurusan, gender, nomor_whatsapp, email,
-           alamat, tanggal_masuk, status
+    SELECT id, nim, nama, jurusan, gender, nomor_whatsapp,
+           email, alamat, tanggal_masuk, status
     FROM peserta
     WHERE (nim = ? OR id = ?)
       AND status = 'AKTIF'
@@ -467,11 +515,19 @@ async function login(
     .first<any>();
 
   if (!peserta) {
-    return errorResponse('Peserta tidak ditemukan atau tidak aktif.', 401, origin);
+    return errorResponse(
+      'Peserta tidak ditemukan atau tidak aktif.',
+      401,
+      origin,
+    );
   }
 
-  const session = await createSession(env, 'PESERTA', null, peserta.id);
-  const mappedPeserta = mapPeserta(peserta);
+  const session = await createSession(
+    env,
+    'PESERTA',
+    null,
+    peserta.id,
+  );
 
   return json(
     {
@@ -485,7 +541,7 @@ async function login(
         role: 'PESERTA',
         statusAktif: true,
       },
-      peserta: mappedPeserta,
+      peserta: mapPeserta(peserta),
     },
     200,
     origin,
@@ -503,10 +559,10 @@ async function getParticipantData(
     .first<any>();
 
   const absensi = await env.DB.prepare(`
-    SELECT a.*
-    FROM absensi a
-    WHERE a.peserta_id = ?
-    ORDER BY a.waktu_server DESC
+    SELECT *
+    FROM absensi
+    WHERE peserta_id = ?
+    ORDER BY waktu_server DESC
   `)
     .bind(pesertaId)
     .all<any>();
@@ -516,17 +572,20 @@ async function getParticipantData(
     FROM batch b
     JOIN batch_peserta bp ON bp.batch_id = b.id
     WHERE bp.peserta_id = ?
+    ORDER BY b.tanggal_mulai DESC
   `)
     .bind(pesertaId)
     .all<any>();
 
-  const batchIds = batchRows.results.map((b: any) => b.id);
+  const batchIds = batchRows.results.map((row: any) => row.id);
   let jadwalRows: any[] = [];
 
   if (batchIds.length) {
     const placeholders = batchIds.map(() => '?').join(',');
+
     const result = await env.DB.prepare(`
-      SELECT * FROM jadwal_kegiatan
+      SELECT *
+      FROM jadwal_kegiatan
       WHERE batch_id IN (${placeholders})
       ORDER BY tanggal, jam_mulai
     `)
@@ -537,13 +596,19 @@ async function getParticipantData(
   }
 
   const izin = await env.DB.prepare(`
-    SELECT * FROM izin WHERE peserta_id = ? ORDER BY tanggal_mulai DESC
+    SELECT *
+    FROM izin
+    WHERE peserta_id = ?
+    ORDER BY tanggal_mulai DESC
   `)
     .bind(pesertaId)
     .all<any>();
 
   const pembenaran = await env.DB.prepare(`
-    SELECT * FROM pembenaran WHERE peserta_id = ? ORDER BY tanggal DESC
+    SELECT *
+    FROM pembenaran
+    WHERE peserta_id = ?
+    ORDER BY tanggal DESC
   `)
     .bind(pesertaId)
     .all<any>();
@@ -559,7 +624,9 @@ async function getParticipantData(
   };
 }
 
-async function getStaffData(env: Env): Promise<Record<string, unknown>> {
+async function getStaffData(
+  env: Env,
+): Promise<Record<string, unknown>> {
   const [
     peserta,
     absensi,
@@ -570,12 +637,24 @@ async function getStaffData(env: Env): Promise<Record<string, unknown>> {
     musyrif,
   ] = await Promise.all([
     env.DB.prepare('SELECT * FROM peserta ORDER BY nama').all<any>(),
-    env.DB.prepare('SELECT * FROM absensi ORDER BY waktu_server DESC').all<any>(),
-    env.DB.prepare('SELECT * FROM jadwal_kegiatan ORDER BY tanggal, jam_mulai').all<any>(),
-    env.DB.prepare('SELECT * FROM batch ORDER BY tanggal_mulai DESC').all<any>(),
-    env.DB.prepare('SELECT * FROM izin ORDER BY tanggal_mulai DESC').all<any>(),
-    env.DB.prepare('SELECT * FROM pembenaran ORDER BY tanggal DESC').all<any>(),
-    env.DB.prepare('SELECT * FROM musyrif ORDER BY nama').all<any>(),
+    env.DB.prepare(
+      'SELECT * FROM absensi ORDER BY waktu_server DESC',
+    ).all<any>(),
+    env.DB.prepare(
+      'SELECT * FROM jadwal_kegiatan ORDER BY tanggal, jam_mulai',
+    ).all<any>(),
+    env.DB.prepare(
+      'SELECT * FROM batch ORDER BY tanggal_mulai DESC',
+    ).all<any>(),
+    env.DB.prepare(
+      'SELECT * FROM izin ORDER BY tanggal_mulai DESC',
+    ).all<any>(),
+    env.DB.prepare(
+      'SELECT * FROM pembenaran ORDER BY tanggal DESC',
+    ).all<any>(),
+    env.DB.prepare(
+      'SELECT * FROM musyrif ORDER BY nama',
+    ).all<any>(),
   ]);
 
   return {
@@ -591,17 +670,6 @@ async function getStaffData(env: Env): Promise<Record<string, unknown>> {
       ...safeJson(row.data_json),
     })),
   };
-}
-
-function safeJson(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value || '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed
-      : {};
-  } catch {
-    return {};
-  }
 }
 
 async function syncData(
@@ -628,23 +696,102 @@ async function syncData(
   }
 
   const body = await readBody(request);
-  let savedPeserta = 0;
-  let savedAbsensi = 0;
 
-  const pesertaList = Array.isArray(body?.peserta) ? body.peserta : [];
-  const absensiList = Array.isArray(body?.absensi) ? body.absensi : [];
+  const pesertaList = Array.isArray(body?.peserta)
+    ? body.peserta
+    : [];
 
-  if (pesertaList.length > 5000 || absensiList.length > 10000) {
-    return errorResponse('Jumlah data dalam satu permintaan terlalu banyak.', 413, origin);
+  const absensiList = Array.isArray(body?.absensi)
+    ? body.absensi
+    : [];
+
+  const batchList = Array.isArray(body?.batch)
+    ? body.batch
+    : [];
+
+  const jadwalList = Array.isArray(body?.jadwal)
+    ? body.jadwal
+    : [];
+
+  const izinList = Array.isArray(body?.izin)
+    ? body.izin
+    : [];
+
+  const pembenaranList = Array.isArray(body?.pembenaran)
+    ? body.pembenaran
+    : [];
+
+  if (
+    pesertaList.length > 5000 ||
+    absensiList.length > 10000 ||
+    batchList.length > 500 ||
+    jadwalList.length > 10000 ||
+    izinList.length > 10000 ||
+    pembenaranList.length > 10000
+  ) {
+    return errorResponse(
+      'Jumlah data dalam satu permintaan terlalu banyak.',
+      413,
+      origin,
+    );
   }
+
+  // Simpan batch terlebih dahulu agar referensi jadwal valid.
+  let savedBatch = 0;
+
+  for (const b of batchList) {
+    const id = String(b?.id ?? b?.batchId ?? '').trim();
+    const nama = String(b?.nama ?? b?.namaBatch ?? '').trim();
+    const mulai = String(
+      b?.tanggalMulai ?? b?.tanggal_mulai ?? '',
+    ).trim();
+    const selesai = String(
+      b?.tanggalSelesai ?? b?.tanggal_selesai ?? '',
+    ).trim();
+
+    if (!id || !nama || !mulai || !selesai) continue;
+
+    await env.DB.prepare(`
+      INSERT INTO batch (
+        id, nama, tanggal_mulai, tanggal_selesai, status
+      )
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        nama = excluded.nama,
+        tanggal_mulai = excluded.tanggal_mulai,
+        tanggal_selesai = excluded.tanggal_selesai,
+        status = excluded.status,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+      .bind(
+        id,
+        nama,
+        mulai,
+        selesai,
+        String(b?.status ?? 'AKTIF').toUpperCase(),
+      )
+      .run();
+
+    savedBatch++;
+  }
+
+  let savedPeserta = 0;
 
   for (const p of pesertaList) {
     const nim = String(p?.nim ?? p?.NIM ?? '').trim();
-    const nama = String(p?.nama ?? p?.namaLengkap ?? p?.nama_lengkap ?? '').trim();
+    const nama = String(
+      p?.nama ?? p?.namaLengkap ?? p?.nama_lengkap ?? '',
+    ).trim();
 
     if (!nim || !nama) continue;
 
-    const id = String(p?.id ?? p?.pesertaId ?? p?.peserta_id ?? nim).trim();
+    const id = String(
+      p?.id ?? p?.pesertaId ?? p?.peserta_id ?? nim,
+    ).trim();
+
+    const status =
+      p?.status ??
+      (p?.statusAktif === false ? 'NONAKTIF' : 'AKTIF');
 
     await env.DB.prepare(`
       INSERT INTO peserta (
@@ -674,31 +821,72 @@ async function syncData(
         p?.email ?? null,
         p?.alamat ?? null,
         p?.tanggalMasuk ?? p?.tanggal_masuk ?? null,
-        p?.status ?? (p?.statusAktif === false ? 'NONAKTIF' : 'AKTIF'),
+        String(status).toUpperCase(),
       )
       .run();
 
     const batchId = p?.batchId ?? p?.batch_id;
 
     if (batchId) {
-      const batchExists = await env.DB.prepare(
-        'SELECT id FROM batch WHERE id = ? LIMIT 1',
-      )
-        .bind(String(batchId))
-        .first();
-
-      if (batchExists) {
-        await env.DB.prepare(`
-          INSERT OR IGNORE INTO batch_peserta (batch_id, peserta_id)
-          VALUES (?, ?)
-        `)
-          .bind(String(batchId), id)
-          .run();
-      }
+      await env.DB.prepare(`
+        INSERT OR IGNORE INTO batch_peserta (batch_id, peserta_id)
+        SELECT ?, ?
+        WHERE EXISTS (SELECT 1 FROM batch WHERE id = ?)
+          AND EXISTS (SELECT 1 FROM peserta WHERE id = ?)
+      `)
+        .bind(String(batchId), id, String(batchId), id)
+        .run();
     }
 
     savedPeserta++;
   }
+
+  let savedJadwal = 0;
+
+  for (const j of jadwalList) {
+    const id = String(j?.id ?? j?.jadwalId ?? '').trim();
+    const batchId = String(
+      j?.batchId ?? j?.batch_id ?? '',
+    ).trim();
+    const nama = String(
+      j?.namaKegiatan ?? j?.nama_kegiatan ?? j?.nama ?? '',
+    ).trim();
+    const tanggal = String(j?.tanggal ?? '').trim();
+
+    if (!id || !batchId || !nama || !tanggal) continue;
+
+    await env.DB.prepare(`
+      INSERT INTO jadwal_kegiatan (
+        id, batch_id, nama_kegiatan, tanggal,
+        jam_mulai, jam_selesai, wajib, status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        batch_id = excluded.batch_id,
+        nama_kegiatan = excluded.nama_kegiatan,
+        tanggal = excluded.tanggal,
+        jam_mulai = excluded.jam_mulai,
+        jam_selesai = excluded.jam_selesai,
+        wajib = excluded.wajib,
+        status = excluded.status,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+      .bind(
+        id,
+        batchId,
+        nama,
+        tanggal,
+        j?.jamMulai ?? j?.jam_mulai ?? null,
+        j?.jamSelesai ?? j?.jam_selesai ?? null,
+        j?.wajib === false ? 0 : 1,
+        String(j?.status ?? 'AKTIF').toUpperCase(),
+      )
+      .run();
+
+    savedJadwal++;
+  }
+
+  let savedAbsensi = 0;
 
   for (const a of absensiList) {
     const pesertaId = String(
@@ -706,45 +894,40 @@ async function syncData(
     ).trim();
 
     const jadwalId = String(
-      a?.jadwalId ?? a?.jadwal_id ?? a?.jadwalKegiatanId ?? '',
+      a?.jadwalId ??
+      a?.jadwal_id ??
+      a?.jadwalKegiatanId ??
+      '',
     ).trim();
 
     if (!pesertaId || !jadwalId) continue;
-
-    const [pesertaExists, jadwalExists] = await Promise.all([
-      env.DB.prepare('SELECT id FROM peserta WHERE id = ? LIMIT 1')
-        .bind(pesertaId)
-        .first(),
-      env.DB.prepare('SELECT id FROM jadwal_kegiatan WHERE id = ? LIMIT 1')
-        .bind(jadwalId)
-        .first(),
-    ]);
-
-    if (!pesertaExists || !jadwalExists) continue;
 
     const status = String(
       a?.status ?? a?.statusAbsensi ?? 'HADIR',
     ).toUpperCase();
 
-    const allowedStatuses = [
-      'HADIR',
-      'IZIN',
-      'SAKIT',
-      'ALFA',
-      'TERLAMBAT',
-      'DISPENSASI',
-    ];
+    if (!ALLOWED_ATTENDANCE_STATUSES.includes(status)) continue;
 
-    if (!allowedStatuses.includes(status)) continue;
+    const id = String(
+      a?.id ?? a?.absensiId ?? newId('abs_'),
+    ).trim();
 
-    const id = String(a?.id ?? a?.absensiId ?? newId('abs_'));
-    const waktuServer = a?.waktuServer ?? a?.waktu_server ?? new Date().toISOString();
+    if (!id) continue;
 
-    await env.DB.prepare(`
+    const waktuServer = String(
+      a?.waktuServer ??
+      a?.waktu_server ??
+      new Date().toISOString(),
+    );
+
+    const result = await env.DB.prepare(`
       INSERT INTO absensi (
         id, peserta_id, jadwal_id, status, waktu_server, keterangan
       )
-      VALUES (?, ?, ?, ?, ?, ?)
+      SELECT ?, p.id, j.id, ?, ?, ?
+      FROM peserta p
+      JOIN jadwal_kegiatan j ON j.id = ?
+      WHERE p.id = ?
       ON CONFLICT(peserta_id, jadwal_id) DO UPDATE SET
         status = excluded.status,
         waktu_server = excluded.waktu_server,
@@ -753,31 +936,118 @@ async function syncData(
     `)
       .bind(
         id,
-        pesertaId,
-        jadwalId,
         status,
-        String(waktuServer),
+        waktuServer,
         a?.keterangan ?? null,
+        jadwalId,
+        pesertaId,
       )
       .run();
 
-    savedAbsensi++;
+    if (result.success) savedAbsensi++;
   }
 
-  await audit(
-    env,
-    session.user_id,
-    'SYNC',
-    'data',
-    undefined,
-  );
+  // Izin dan pembenaran diproses sebagai data milik peserta.
+  // Hanya admin/petugas yang dapat mengirim perubahan melalui endpoint ini.
+  let savedIzin = 0;
+
+  for (const item of izinList) {
+    const id = String(item?.id ?? '').trim();
+    const pesertaId = String(
+      item?.pesertaId ?? item?.peserta_id ?? '',
+    ).trim();
+    const mulai = String(
+      item?.tanggalMulai ?? item?.tanggal_mulai ?? '',
+    ).trim();
+    const selesai = String(
+      item?.tanggalSelesai ?? item?.tanggal_selesai ?? '',
+    ).trim();
+
+    if (!id || !pesertaId || !mulai || !selesai) continue;
+
+    await env.DB.prepare(`
+      INSERT INTO izin (
+        id, peserta_id, tanggal_mulai, tanggal_selesai, alasan, status
+      )
+      SELECT ?, id, ?, ?, ?, ?
+      FROM peserta
+      WHERE id = ?
+      ON CONFLICT(id) DO UPDATE SET
+        tanggal_mulai = excluded.tanggal_mulai,
+        tanggal_selesai = excluded.tanggal_selesai,
+        alasan = excluded.alasan,
+        status = excluded.status,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+      .bind(
+        id,
+        mulai,
+        selesai,
+        item?.alasan ?? null,
+        String(item?.status ?? 'MENUNGGU').toUpperCase(),
+        pesertaId,
+      )
+      .run();
+
+    savedIzin++;
+  }
+
+  let savedPembenaran = 0;
+
+  for (const item of pembenaranList) {
+    const id = String(item?.id ?? '').trim();
+    const pesertaId = String(
+      item?.pesertaId ?? item?.peserta_id ?? '',
+    ).trim();
+    const tanggal = String(item?.tanggal ?? '').trim();
+
+    if (!id || !pesertaId || !tanggal) continue;
+
+    await env.DB.prepare(`
+      INSERT INTO pembenaran (
+        id, peserta_id, tanggal, alasan, status
+      )
+      SELECT ?, id, ?, ?, ?
+      FROM peserta
+      WHERE id = ?
+      ON CONFLICT(id) DO UPDATE SET
+        tanggal = excluded.tanggal,
+        alasan = excluded.alasan,
+        status = excluded.status,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+      .bind(
+        id,
+        tanggal,
+        item?.alasan ?? null,
+        String(item?.status ?? 'MENUNGGU').toUpperCase(),
+        pesertaId,
+      )
+      .run();
+
+    savedPembenaran++;
+  }
+
+  await audit(env, session.user_id, 'SYNC', 'data');
+
+  const count =
+    savedBatch +
+    savedPeserta +
+    savedJadwal +
+    savedAbsensi +
+    savedIzin +
+    savedPembenaran;
 
   return json(
     {
       success: true,
-      count: savedPeserta + savedAbsensi,
+      count,
+      batchDisimpan: savedBatch,
       pesertaDisimpan: savedPeserta,
+      jadwalDisimpan: savedJadwal,
       absensiDisimpan: savedAbsensi,
+      izinDisimpan: savedIzin,
+      pembenaranDisimpan: savedPembenaran,
       message: 'Permintaan sinkronisasi selesai diproses.',
     },
     200,
@@ -792,12 +1062,16 @@ async function usersEndpoint(
   origin: string,
 ): Promise<Response> {
   if (!requireRole(session, ['ADMIN'])) {
-    return errorResponse('Hanya admin yang dapat mengelola akun.', 403, origin);
+    return errorResponse(
+      'Hanya admin yang dapat mengelola akun.',
+      403,
+      origin,
+    );
   }
 
   if (request.method === 'GET') {
     const result = await env.DB.prepare(`
-      SELECT id, username, nama_lengkap, role, status, created_at, updated_at
+      SELECT id, username, role, status, created_at, updated_at
       FROM users
       ORDER BY username
     `).all<any>();
@@ -808,8 +1082,9 @@ async function usersEndpoint(
         users: result.results.map((row: any) => ({
           id: row.id,
           username: row.username,
-          namaLengkap: row.nama_lengkap ?? row.username,
+          namaLengkap: row.username,
           role: row.role,
+          gender: '',
           statusAktif: row.status === 'AKTIF',
           createdAt: row.created_at,
           updatedAt: row.updated_at,
@@ -825,42 +1100,102 @@ async function usersEndpoint(
   }
 
   const body = await readBody(request);
+
   const id = String(body?.id ?? '').trim();
   const username = String(body?.username ?? '').trim();
-  const password = typeof body?.password === 'string' ? body.password : '';
+  const password =
+    typeof body?.password === 'string' ? body.password : '';
   const role = String(body?.role ?? '').toUpperCase();
 
   if (!username || !['ADMIN', 'PETUGAS'].includes(role)) {
-    return errorResponse('Username atau peran akun tidak valid.', 400, origin);
+    return errorResponse(
+      'Username atau peran akun tidak valid.',
+      400,
+      origin,
+    );
   }
 
   if (password.length < 10) {
-    return errorResponse('Kata sandi baru minimal 10 karakter.', 400, origin);
+    return errorResponse(
+      'Kata sandi baru minimal 10 karakter.',
+      400,
+      origin,
+    );
+  }
+
+  // Jangan menghapus atau menonaktifkan admin terakhir yang aktif.
+  if (role !== 'ADMIN') {
+    const existing = id
+      ? await env.DB.prepare(
+          'SELECT role FROM users WHERE id = ? LIMIT 1',
+        ).bind(id).first<any>()
+      : null;
+
+    if (existing?.role === 'ADMIN') {
+      const count = await env.DB.prepare(`
+        SELECT COUNT(*) AS total
+        FROM users
+        WHERE role = 'ADMIN'
+          AND status = 'AKTIF'
+          AND id != ?
+      `)
+        .bind(id)
+        .first<{ total: number }>();
+
+      if (!count || count.total < 1) {
+        return errorResponse(
+          'Tidak dapat mengubah peran admin aktif terakhir.',
+          400,
+          origin,
+        );
+      }
+    }
   }
 
   const passwordHash = await hashPassword(password);
   const accountId = id || newId('usr_');
-  const namaLengkap = String(body?.namaLengkap ?? username).trim();
-  const status = body?.statusAktif === false ? 'NONAKTIF' : 'AKTIF';
+  const status =
+    body?.statusAktif === false ? 'NONAKTIF' : 'AKTIF';
 
+  try {
+    await env.DB.prepare(`
+      INSERT INTO users (
+        id, username, password_hash, role, status
+      )
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        username = excluded.username,
+        password_hash = excluded.password_hash,
+        role = excluded.role,
+        status = excluded.status,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+      .bind(
+        accountId,
+        username,
+        passwordHash,
+        role,
+        status,
+      )
+      .run();
+  } catch {
+    return errorResponse(
+      'Akun tidak dapat disimpan. Pastikan username belum digunakan.',
+      409,
+      origin,
+    );
+  }
+
+  // Sesi lama akun ini tidak lagi berlaku setelah perubahan akun.
   await env.DB.prepare(`
-    INSERT INTO users (
-      id, username, password_hash, role, status
-    )
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      username = excluded.username,
-      password_hash = excluded.password_hash,
-      role = excluded.role,
-      status = excluded.status,
-      updated_at = CURRENT_TIMESTAMP
+    UPDATE sessions
+    SET revoked_at = ?
+    WHERE user_id = ?
+      AND revoked_at IS NULL
   `)
-    .bind(accountId, username, passwordHash, role, status)
+    .bind(new Date().toISOString(), accountId)
     .run();
 
-  // The current migration has no dedicated nama_lengkap/gender columns.
-  // Store optional profile data in app_config only if a later schema adds
-  // support; never expose password material to the client.
   await audit(env, session.user_id, 'SAVE_USER', 'users', accountId);
 
   return json(
@@ -881,7 +1216,11 @@ async function deleteUser(
   origin: string,
 ): Promise<Response> {
   if (!requireRole(session, ['ADMIN'])) {
-    return errorResponse('Hanya admin yang dapat menghapus akun.', 403, origin);
+    return errorResponse(
+      'Hanya admin yang dapat menghapus akun.',
+      403,
+      origin,
+    );
   }
 
   if (request.method !== 'POST') {
@@ -891,23 +1230,85 @@ async function deleteUser(
   const body = await readBody(request);
   const id = String(body?.id ?? '').trim();
 
-  if (!id) return errorResponse('ID akun wajib diisi.', 400, origin);
+  if (!id) {
+    return errorResponse('ID akun wajib diisi.', 400, origin);
+  }
 
   if (session.user_id === id) {
-    return errorResponse('Kamu tidak dapat menghapus akun yang sedang digunakan.', 400, origin);
+    return errorResponse(
+      'Kamu tidak dapat menghapus akun yang sedang digunakan.',
+      400,
+      origin,
+    );
+  }
+
+  const target = await env.DB.prepare(`
+    SELECT id, role, status
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `)
+    .bind(id)
+    .first<any>();
+
+  if (!target) {
+    return errorResponse('Akun tidak ditemukan.', 404, origin);
+  }
+
+  if (target.role === 'ADMIN' && target.status === 'AKTIF') {
+    const count = await env.DB.prepare(`
+      SELECT COUNT(*) AS total
+      FROM users
+      WHERE role = 'ADMIN' AND status = 'AKTIF'
+    `).first<{ total: number }>();
+
+    if (count && count.total <= 1) {
+      return errorResponse(
+        'Admin aktif terakhir tidak dapat dihapus.',
+        400,
+        origin,
+      );
+    }
   }
 
   await env.DB.batch([
-    env.DB.prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
-      .bind(new Date().toISOString(), id),
-    env.DB.prepare('DELETE FROM users WHERE id = ?')
-      .bind(id),
+    env.DB.prepare(`
+      UPDATE sessions
+      SET revoked_at = ?
+      WHERE user_id = ? AND revoked_at IS NULL
+    `).bind(new Date().toISOString(), id),
+    env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id),
   ]);
 
   await audit(env, session.user_id, 'DELETE_USER', 'users', id);
 
   return json(
     { success: true, message: 'Akun berhasil dihapus.' },
+    200,
+    origin,
+  );
+}
+
+async function logout(
+  request: Request,
+  env: Env,
+  origin: string,
+): Promise<Response> {
+  const header = request.headers.get('Authorization') ?? '';
+  const match = header.match(/^Bearer\s+([A-Za-z0-9_-]{20,})$/);
+
+  if (match) {
+    await env.DB.prepare(`
+      UPDATE sessions
+      SET revoked_at = ?
+      WHERE token_hash = ? AND revoked_at IS NULL
+    `)
+      .bind(new Date().toISOString(), await sha256(match[1]))
+      .run();
+  }
+
+  return json(
+    { success: true, message: 'Sesi diakhiri.' },
     200,
     origin,
   );
@@ -925,7 +1326,9 @@ async function routeApi(
     return new Response(null, {
       status: 204,
       headers: {
-        'Access-Control-Allow-Origin': origin,
+        ...(origin
+          ? { 'Access-Control-Allow-Origin': origin }
+          : {}),
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
         'Access-Control-Max-Age': '86400',
@@ -937,6 +1340,7 @@ async function routeApi(
   if (path === '/api/health' || path === '/api/d1/health') {
     try {
       await env.DB.prepare('SELECT 1 AS ok').first();
+
       return json(
         {
           success: true,
@@ -948,7 +1352,11 @@ async function routeApi(
         origin,
       );
     } catch {
-      return errorResponse('D1 belum tersedia atau migrasi belum dijalankan.', 503, origin);
+      return errorResponse(
+        'D1 belum tersedia atau migrasi belum dijalankan.',
+        503,
+        origin,
+      );
     }
   }
 
@@ -962,25 +1370,17 @@ async function routeApi(
     }
 
     if (path === '/api/d1/logout' && request.method === 'POST') {
-      const header = request.headers.get('Authorization') ?? '';
-      const match = header.match(/^Bearer\s+([A-Za-z0-9_-]{20,})$/);
-
-      if (match) {
-        await env.DB.prepare(`
-          UPDATE sessions SET revoked_at = ?
-          WHERE token_hash = ? AND revoked_at IS NULL
-        `)
-          .bind(new Date().toISOString(), await sha256(match[1]))
-          .run();
-      }
-
-      return json({ success: true, message: 'Sesi diakhiri.' }, 200, origin);
+      return await logout(request, env, origin);
     }
 
     const session = await authenticate(request, env);
 
     if (!session) {
-      return errorResponse('Sesi tidak valid atau sudah kedaluwarsa. Silakan login kembali.', 401, origin);
+      return errorResponse(
+        'Sesi tidak valid atau sudah kedaluwarsa. Silakan login kembali.',
+        401,
+        origin,
+      );
     }
 
     if (path === '/api/d1/sync') {
@@ -997,26 +1397,43 @@ async function routeApi(
 
     return errorResponse('Endpoint tidak ditemukan.', 404, origin);
   } catch (error) {
-    if (error instanceof Error && error.message === 'Ukuran permintaan terlalu besar.') {
+    if (
+      error instanceof Error &&
+      error.message === 'Ukuran permintaan terlalu besar.'
+    ) {
       return errorResponse(error.message, 413, origin);
     }
 
-    if (error instanceof Error && error.message === 'Format JSON tidak valid.') {
+    if (
+      error instanceof Error &&
+      error.message === 'Format JSON tidak valid.'
+    ) {
       return errorResponse(error.message, 400, origin);
     }
 
-    // Do not send SQL or internal error details to the browser.
     console.error('D1 API request failed:', error);
-    return errorResponse('Terjadi kesalahan pada server.', 500, origin);
+
+    return errorResponse(
+      'Terjadi kesalahan pada server.',
+      500,
+      origin,
+    );
   }
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const configuredDomain = env.DOMAIN
-      ? new URL(env.DOMAIN).origin
-      : url.origin;
+
+    let configuredDomain: string;
+
+    try {
+      configuredDomain = env.DOMAIN
+        ? new URL(env.DOMAIN).origin
+        : url.origin;
+    } catch {
+      return errorResponse('Konfigurasi domain server tidak valid.', 500);
+    }
 
     const allowedOrigins = new Set([
       configuredDomain,
@@ -1037,7 +1454,7 @@ export default {
       return routeApi(request, env, origin);
     }
 
-    // Preserve the existing frontend asset handler.
+    // Pertahankan handler aset frontend Vite/Cloudflare.
     return env.ASSETS.fetch(request);
   },
 };
