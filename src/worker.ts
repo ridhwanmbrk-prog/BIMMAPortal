@@ -209,17 +209,18 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
   }
 
   try {
-    // 2. Query execution (POST /api/d1/query)
-    if ((path === '/query' || path === '/d1/query') && request.method === 'POST') {
-      const body = (await request.json()) as { sql: string; params?: any[] };
-      if (!body.sql) {
-        return jsonResponse({ error: 'SQL query parameter wajib diisi.' }, 400);
-      }
-      const stmt = env.DB.prepare(body.sql);
-      const bound = body.params && body.params.length > 0 ? stmt.bind(...body.params) : stmt;
-      const res = await bound.all();
-      return jsonResponse({ success: true, results: res.results, meta: res.meta });
+    
+    // 2. Raw SQL endpoint disabled for security.
+    if (
+      (path === '/query' || path === '/d1/query') &&
+      request.method === 'POST'
+    ) {
+      return jsonResponse(
+        { success: false, error: 'Endpoint SQL mentah dinonaktifkan.' },
+        404
+      );
     }
+
 
     // 3. Login Mahasantri / Petugas via D1 (POST /api/d1/login)
     if ((path === '/login' || path === '/d1/login') && request.method === 'POST') {
