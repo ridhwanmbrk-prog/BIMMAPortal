@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "bimma-absensi",
+  "name": "bimmaportal",
   "main": "src/worker.ts",
   "compatibility_date": "2024-09-23",
   "compatibility_flags": [
