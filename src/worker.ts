@@ -1,732 +1,1043 @@
-/**
- * Cloudflare Worker Entry Point for BIMMA Absensi
- * Domain: https://absensi.bimma-uab.my.id
- * Database: bimma-absensi-db (dd5dbf9a-56c0-4ee0-85df-a698c7c99e56)
- *
- * Handles:
- * 1. Edge D1 Database API endpoints (/api/*)
- * 2. Clean Path Routing & Deep Links without '#' hashes
- * 3. Dynamic SEO Meta Tag injection per route
- * 4. Strict HTTP 404 for unknown URLs
- * 5. Static Assets delivery via ASSETS binding
- */
 
-export interface D1PreparedStatement {
-  bind(...values: any[]): D1PreparedStatement;
-  first<T = unknown>(colName?: string): Promise<T | null>;
-  run<T = unknown>(): Promise<any>;
-  all<T = unknown>(): Promise<{ results?: T[]; meta?: any }>;
-}
-
-export interface D1Database {
-  prepare(query: string): D1PreparedStatement;
-  dump(): Promise<ArrayBuffer>;
-  batch<T = unknown>(statements: D1PreparedStatement[]): Promise<any[]>;
-  exec<T = unknown>(query: string): Promise<any>;
-}
-
-export interface Env {
+interface Env {
   DB: D1Database;
-  ASSETS: {
-    fetch: (request: Request | string) => Promise<Response>;
-  };
+  ASSETS: Fetcher;
   DOMAIN?: string;
   ENVIRONMENT?: string;
 }
 
-const DOMAIN = 'https://absensi.bimma-uab.my.id';
+type Role = 'ADMIN' | 'PETUGAS' | 'PESERTA';
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-};
+interface Session {
+  id: string;
+  user_id: string | null;
+  peserta_id: string | null;
+  role: Role;
+}
 
-function jsonResponse(data: any, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store, no-cache, must-revalidate',
-    },
+const SESSION_HOURS = 8;
+const PASSWORD_ITERATIONS = 100_000;
+const MAX_BODY_BYTES = 1_000_000;
+
+const encoder = new TextEncoder();
+
+function json(data: unknown, status = 200, origin = ''): Response {
+  const headers = new Headers({
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
   });
-}
 
-interface RouteMeta {
-  title: string;
-  description: string;
-  robots: string;
-  isPublic: boolean;
-}
-
-const ROUTE_CONFIG: Record<string, RouteMeta> = {
-  '/': {
-    title: 'BIMMA Absensi - Presensi & Manajemen Santri PESMA UNISA Bandung',
-    description: "Sistem Informasi Presensi & Manajemen Santri BIMMA (Bimbingan Mahasiswa) Pesantren Mahasiswa (PESMA) Universitas 'Aisyiyah Bandung.",
-    robots: 'index, follow',
-    isPublic: true,
-  },
-  '/login': {
-    title: 'Login Petugas & Santri - BIMMA Absensi UNISA Bandung',
-    description: 'Portal autentikasi untuk pengurus, musyrif, dan santri asrama PESMA Universitas Aisyiyah Bandung.',
-    robots: 'noindex, follow',
-    isPublic: true,
-  },
-  '/biodata-mahasiswa': {
-    title: 'Formulir Biodata Santri BIMMA - PESMA UNISA Bandung',
-    description: "Formulir pendaftaran dan pengisian biodata mahasantri baru Pesantren Mahasiswa Universitas 'Aisyiyah Bandung.",
-    robots: 'index, follow',
-    isPublic: true,
-  },
-  '/dashboard': {
-    title: 'Dashboard Presensi - BIMMA Absensi UNISA Bandung',
-    description: 'Dashboard utama presensi halaqah dan kegiatan asrama santri BIMMA.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/peserta-portal': {
-    title: 'Portal Kehadiran Santri - BIMMA Absensi UNISA Bandung',
-    description: 'Portal kehadiran mandiri, QR scan, dan histori presensi santri.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/laporan-alfa': {
-    title: 'Laporan Santri Belum Absen - BIMMA Absensi UNISA Bandung',
-    description: 'Rekapitulasi santri yang belum hadir untuk tindak lanjut musyrif dan pengurus.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/rekap-tabel': {
-    title: 'Tabel Presensi Harian - BIMMA Absensi UNISA Bandung',
-    description: 'Tabel data presensi harian santri, filter kegiatan, dan ekspor spreadsheet.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/jadwal': {
-    title: 'Kelola Jadwal & Kegiatan - BIMMA Absensi UNISA Bandung',
-    description: 'Manajemen jadwal kegiatan asrama, shalat berjamaah, dan kajian mahasantri.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/petugas': {
-    title: 'Kelola Petugas Musyrif - BIMMA Absensi UNISA Bandung',
-    description: 'Manajemen akun petugas piket dan musyrif asrama PESMA.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/batch': {
-    title: 'Kelola Batch & Kalender - BIMMA Absensi UNISA Bandung',
-    description: 'Pengaturan 3 batch periode asrama dan kalender akademik santri.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/peserta': {
-    title: 'Data Santri BIMMA - BIMMA Absensi UNISA Bandung',
-    description: 'Master data santri BIMMA, filter kamar, dan impor data spreadsheet.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/izin': {
-    title: 'ACC & Rekap Perizinan - BIMMA Absensi UNISA Bandung',
-    description: 'Verifikasi dan persetujuan surat izin santri meninggalkan asrama.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/pembenaran': {
-    title: 'Verifikasi Hadir Telat - BIMMA Absensi UNISA Bandung',
-    description: 'Validasi keterlambatan atau lupa scan presensi santri.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/kartu-peserta': {
-    title: 'Cetak Kartu & QR Santri - BIMMA Absensi UNISA Bandung',
-    description: 'Penerbitan kartu identitas santri digital dan barcode QR scan presensi.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-  '/pengaturan': {
-    title: 'Pengaturan Sistem & Database D1 - BIMMA Absensi UNISA Bandung',
-    description: 'Konfigurasi integrasi Cloudflare D1 SQL dan sinkronisasi Google Sheets.',
-    robots: 'noindex, nofollow',
-    isPublic: false,
-  },
-};
-
-/**
- * Handle API endpoints for Cloudflare D1
- */
-async function handleApiRequest(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
-  const path = url.pathname.replace(/^\/api/, '');
-
-  if (request.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  if (origin) {
+    headers.set('Access-Control-Allow-Origin', origin);
+    headers.set('Vary', 'Origin');
+    headers.set(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization',
+    );
+    headers.set(
+      'Access-Control-Allow-Methods',
+      'GET, POST, OPTIONS',
+    );
   }
 
-  // 1. Health check (works even without D1 binding to test route)
-  if (path === '/health' || path === '/d1/health') {
-    if (!env || !env.DB) {
-      return jsonResponse({
-        success: false,
-        connected: false,
-        message: 'D1 binding DB belum terhubung di runtime ini.',
-        databaseName: 'bimma-absensi-db',
-        databaseId: 'dd5dbf9a-56c0-4ee0-85df-a698c7c99e56',
-        timestamp: new Date().toISOString(),
-      }, 503);
-    }
+  return new Response(JSON.stringify(data), { status, headers });
+}
 
+function errorResponse(
+  message: string,
+  status = 400,
+  origin = '',
+): Response {
+  return json({ success: false, message }, status, origin);
+}
+
+function randomBytes(length: number): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(length));
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function fromBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function base64Url(bytes: Uint8Array): string {
+  return toBase64(bytes)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function newId(prefix = ''): string {
+  return `${prefix}${crypto.randomUUID()}`;
+}
+
+async function sha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    encoder.encode(value),
+  );
+  return base64Url(new Uint8Array(digest));
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  );
+
+  const derived = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      salt,
+      iterations: PASSWORD_ITERATIONS,
+    },
+    key,
+    256,
+  );
+
+  return [
+    'pbkdf2',
+    PASSWORD_ITERATIONS,
+    toBase64(salt),
+    toBase64(new Uint8Array(derived)),
+  ].join('$');
+}
+
+async function verifyPassword(
+  password: string,
+  stored: string,
+): Promise<{ valid: boolean; upgradedHash?: string }> {
+  if (!stored) return { valid: false };
+
+  // Verify modern PBKDF2 hashes.
+  if (stored.startsWith('pbkdf2$')) {
     try {
-      const result = await env.DB.prepare('SELECT 1 as test').first();
-      return jsonResponse({
-        success: true,
-        connected: true,
-        databaseName: 'bimma-absensi-db',
-        databaseId: 'dd5dbf9a-56c0-4ee0-85df-a698c7c99e56',
-        test: result,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err: any) {
-      return jsonResponse({
-        success: false,
-        connected: false,
-        error: err.message,
-        databaseName: 'bimma-absensi-db',
-        databaseId: 'dd5dbf9a-56c0-4ee0-85df-a698c7c99e56',
-      }, 500);
+      const [, iterationsText, saltText, expectedText] = stored.split('$');
+      const iterations = Number(iterationsText);
+
+      if (
+        !Number.isInteger(iterations) ||
+        iterations < 100_000 ||
+        iterations > 1_000_000 ||
+        !saltText ||
+        !expectedText
+      ) {
+        return { valid: false };
+      }
+
+      const key = await crypto.subtle.importKey(
+        'raw',
+        encoder.encode(password),
+        'PBKDF2',
+        false,
+        ['deriveBits'],
+      );
+
+      const derived = await crypto.subtle.deriveBits(
+        {
+          name: 'PBKDF2',
+          hash: 'SHA-256',
+          salt: fromBase64(saltText),
+          iterations,
+        },
+        key,
+        256,
+      );
+
+      const actual = new Uint8Array(derived);
+      const expected = fromBase64(expectedText);
+
+      if (actual.length !== expected.length) {
+        return { valid: false };
+      }
+
+      let difference = 0;
+      for (let i = 0; i < actual.length; i++) {
+        difference |= actual[i] ^ expected[i];
+      }
+
+      return { valid: difference === 0 };
+    } catch {
+      return { valid: false };
     }
   }
 
-  if (!env || !env.DB) {
-    return jsonResponse({
-      success: false,
-      connected: false,
-      message: 'Cloudflare D1 binding "DB" tidak terdeteksi pada environment ini.',
-      databaseId: 'dd5dbf9a-56c0-4ee0-85df-a698c7c99e56',
-      databaseName: 'bimma-absensi-db',
-    }, 503);
+  // Temporary compatibility for legacy plaintext records.
+  // A successful login upgrades the stored value to PBKDF2.
+  if (stored === password) {
+    return {
+      valid: true,
+      upgradedHash: await hashPassword(password),
+    };
+  }
+
+  return { valid: false };
+}
+
+function safeUser(row: any): Record<string, unknown> {
+  return {
+    id: row.id,
+    username: row.username,
+    namaLengkap: row.nama_lengkap ?? row.username,
+    role: row.role,
+    gender: row.gender ?? '',
+    statusAktif: row.status === 'AKTIF',
+  };
+}
+
+function mapPeserta(row: any): Record<string, unknown> {
+  return {
+    id: row.id,
+    pesertaId: row.id,
+    nim: row.nim,
+    namaLengkap: row.nama,
+    nama: row.nama,
+    jurusan: row.jurusan ?? '',
+    gender: row.gender ?? '',
+    nomorWhatsapp: row.nomor_whatsapp ?? '',
+    email: row.email ?? '',
+    alamat: row.alamat ?? '',
+    tanggalMasuk: row.tanggal_masuk ?? '',
+    status: row.status,
+    statusPeserta: row.status,
+  };
+}
+
+function mapAbsensi(row: any): Record<string, unknown> {
+  return {
+    id: row.id,
+    absensiId: row.id,
+    pesertaId: row.peserta_id,
+    jadwalId: row.jadwal_id,
+    status: row.status,
+    statusAbsensi: row.status,
+    waktuServer: row.waktu_server,
+    keterangan: row.keterangan ?? '',
+  };
+}
+
+function mapJadwal(row: any): Record<string, unknown> {
+  return {
+    id: row.id,
+    jadwalId: row.id,
+    batchId: row.batch_id,
+    namaKegiatan: row.nama_kegiatan,
+    tanggal: row.tanggal,
+    jamMulai: row.jam_mulai ?? '',
+    jamSelesai: row.jam_selesai ?? '',
+    wajib: Boolean(row.wajib),
+    status: row.status,
+  };
+}
+
+function mapBatch(row: any): Record<string, unknown> {
+  return {
+    id: row.id,
+    batchId: row.id,
+    nama: row.nama,
+    tanggalMulai: row.tanggal_mulai,
+    tanggalSelesai: row.tanggal_selesai,
+    status: row.status,
+  };
+}
+
+function mapIzin(row: any): Record<string, unknown> {
+  return {
+    id: row.id,
+    pesertaId: row.peserta_id,
+    tanggalMulai: row.tanggal_mulai,
+    tanggalSelesai: row.tanggal_selesai,
+    alasan: row.alasan ?? '',
+    status: row.status,
+  };
+}
+
+function mapPembenaran(row: any): Record<string, unknown> {
+  return {
+    id: row.id,
+    pesertaId: row.peserta_id,
+    tanggal: row.tanggal,
+    alasan: row.alasan ?? '',
+    status: row.status,
+  };
+}
+
+async function readBody(request: Request): Promise<any> {
+  const contentLength = Number(request.headers.get('Content-Length') ?? 0);
+
+  if (contentLength > MAX_BODY_BYTES) {
+    throw new Error('Ukuran permintaan terlalu besar.');
+  }
+
+  const text = await request.text();
+
+  if (encoder.encode(text).length > MAX_BODY_BYTES) {
+    throw new Error('Ukuran permintaan terlalu besar.');
   }
 
   try {
-    
-    // 2. Raw SQL endpoint disabled for security.
-    if (
-      (path === '/query' || path === '/d1/query') &&
-      request.method === 'POST'
-    ) {
-      return jsonResponse(
-        { success: false, error: 'Endpoint SQL mentah dinonaktifkan.' },
-        404
-      );
-    }
-
-
-    // 3. Login Mahasantri / Petugas via D1 (POST /api/d1/login)
-    if ((path === '/login' || path === '/d1/login') && request.method === 'POST') {
-      const body = (await request.json()) as { key: string; password?: string };
-      const key = (body.key || '').trim();
-      const keyLower = key.toLowerCase();
-
-      // Cek akun petugas/admin di tabel users D1 jika ada password
-      if (body.password) {
-        const userRow = (await env.DB.prepare(
-          'SELECT id, username, password_hash, nama_lengkap, role, gender, status_aktif FROM users WHERE (LOWER(username) = ? OR LOWER(id) = ?) AND status_aktif = 1'
-        ).bind(keyLower, keyLower).first()) as any;
-
-        if (userRow) {
-          if (userRow.password_hash === body.password) {
-            return jsonResponse({
-              success: true,
-              type: 'USER',
-              user: {
-                id: userRow.id,
-                username: userRow.username,
-                namaLengkap: userRow.nama_lengkap,
-                role: userRow.role,
-                gender: userRow.gender,
-                statusAktif: Boolean(userRow.status_aktif),
-              },
-            });
-          } else {
-            return jsonResponse({ success: false, message: 'Password tidak sesuai.' }, 401);
-          }
-        }
-      }
-
-      // Cek akun mahasantri di tabel peserta D1 (berdasarkan NIM atau ID)
-      const pesertaRow = (await env.DB.prepare(
-        'SELECT peserta_id, nim, nama_lengkap, gender, program_studi, batch_id, kamar, status_peserta, nomor_whatsapp, email, alamat FROM peserta WHERE nim = ? OR peserta_id = ?'
-      ).bind(key, key).first()) as any;
-
-      if (pesertaRow) {
-        if (pesertaRow.status_peserta !== 'AKTIF') {
-          return jsonResponse({
-            success: false,
-            message: `Akun santri ${pesertaRow.nama_lengkap} berstatus ${pesertaRow.status_peserta}. Hubungi musyrif.`,
-          }, 403);
-        }
-
-        return jsonResponse({
-          success: true,
-          type: 'PESERTA',
-          user: {
-            id: `USER_${pesertaRow.peserta_id}`,
-            username: pesertaRow.nim,
-            namaLengkap: pesertaRow.nama_lengkap,
-            role: 'PESERTA',
-            statusAktif: true,
-            pesertaId: pesertaRow.peserta_id,
-            nim: pesertaRow.nim,
-            programStudi: pesertaRow.program_studi,
-            batchId: pesertaRow.batch_id,
-          },
-          peserta: pesertaRow,
-        });
-      }
-
-      return jsonResponse({
-        success: false,
-        message: 'Username, NIM, atau ID santri tidak ditemukan di Cloudflare D1!',
-      }, 404);
-    }
-
-    // 4. Manajemen Akun Users / Kredensial Admin & Petugas (GET, POST, DELETE /api/d1/users)
-    if ((path === '/users' || path === '/d1/users') && request.method === 'GET') {
-      const usersRes = await env.DB.prepare(
-        'SELECT id, username, password_hash, nama_lengkap, role, gender, status_aktif, created_at, updated_at FROM users ORDER BY created_at ASC'
-      ).all();
-      return jsonResponse({
-        success: true,
-        users: (usersRes.results || []).map((u: any) => ({
-          id: u.id,
-          username: u.username,
-          password: u.password_hash,
-          passwordHash: u.password_hash,
-          namaLengkap: u.nama_lengkap,
-          role: u.role,
-          gender: u.gender,
-          statusAktif: Boolean(u.status_aktif),
-          createdAt: u.created_at,
-          updatedAt: u.updated_at,
-        })),
-      });
-    }
-
-    if ((path === '/users' || path === '/d1/users') && request.method === 'POST') {
-      const body = (await request.json()) as any;
-      const { id, username, password, namaLengkap, role, gender, statusAktif } = body;
-
-      if (!id || !username || !password || !namaLengkap) {
-        return jsonResponse({ success: false, message: 'ID, username, password, dan nama lengkap wajib diisi!' }, 400);
-      }
-
-      await env.DB.prepare(
-        `INSERT INTO users (id, username, password_hash, nama_lengkap, role, gender, status_aktif, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-         ON CONFLICT(id) DO UPDATE SET
-           username = excluded.username,
-           password_hash = excluded.password_hash,
-           nama_lengkap = excluded.nama_lengkap,
-           role = excluded.role,
-           gender = excluded.gender,
-           status_aktif = excluded.status_aktif,
-           updated_at = datetime('now')`
-      ).bind(
-        id,
-        username.trim().toLowerCase(),
-        password,
-        namaLengkap.trim(),
-        role || 'PETUGAS',
-        gender || 'IKHWAN',
-        statusAktif !== false ? 1 : 0
-      ).run();
-
-      return jsonResponse({
-        success: true,
-        message: `Akun ${username} (${namaLengkap}) berhasil disimpan ke Cloudflare D1 SQL!`,
-      });
-    }
-
-    if ((path === '/users/delete' || path === '/d1/users/delete') && request.method === 'POST') {
-      const body = (await request.json()) as { id: string };
-      if (!body.id) {
-        return jsonResponse({ success: false, message: 'ID pengguna wajib disertakan.' }, 400);
-      }
-
-      // Pastikan bukan menghapus admin terakhir
-      const countRes = await env.DB.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'ADMIN' AND status_aktif = 1").first<any>();
-      const userToDelete = await env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(body.id).first<any>();
-
-      if (userToDelete?.role === 'ADMIN' && (countRes?.count || 0) <= 1) {
-        return jsonResponse({ success: false, message: 'Tidak dapat menghapus admin utama satu-satunya!' }, 400);
-      }
-
-      await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(body.id).run();
-      return jsonResponse({ success: true, message: 'Akun berhasil dihapus dari Cloudflare D1.' });
-    }
-
-    // 5. Sync Pull dari D1 (GET /api/d1/sync)
-    if ((path === '/sync' || path === '/d1/sync') && request.method === 'GET') {
-      const [pesertaRes, absensiRes, jadwalRes, batchRes, izinRes, pembenaranRes, musyrifRes, usersRes] = await Promise.all([
-        env.DB.prepare('SELECT * FROM peserta').all(),
-        env.DB.prepare('SELECT * FROM absensi ORDER BY waktu_server DESC LIMIT 500').all(),
-        env.DB.prepare('SELECT * FROM jadwal_kegiatan').all(),
-        env.DB.prepare('SELECT * FROM batch').all(),
-        env.DB.prepare('SELECT * FROM izin ORDER BY waktu_pengajuan DESC').all(),
-        env.DB.prepare('SELECT * FROM pembenaran ORDER BY waktu_pengajuan DESC').all(),
-        env.DB.prepare('SELECT * FROM musyrif').all(),
-        env.DB.prepare('SELECT id, username, password_hash, nama_lengkap, role, gender, status_aktif FROM users').all(),
-      ]);
-
-      return jsonResponse({
-        success: true,
-        data: {
-          peserta: pesertaRes.results || [],
-          absensi: absensiRes.results || [],
-          jadwal: jadwalRes.results || [],
-          batch: batchRes.results || [],
-          izin: izinRes.results || [],
-          pembenaran: pembenaranRes.results || [],
-          musyrif: musyrifRes.results || [],
-          users: usersRes.results || [],
-        },
-      });
-    }
-
-    // 6. Sync Push ke D1 (POST /api/d1/sync)
-    if ((path === '/sync' || path === '/d1/sync') && request.method === 'POST') {
-      const body = (await request.json()) as {
-        peserta?: any[];
-        absensi?: any[];
-      };
-
-      const statements: D1PreparedStatement[] = [];
-
-      if (body.peserta && Array.isArray(body.peserta)) {
-        for (const p of body.peserta) {
-          statements.push(
-            env.DB.prepare(
-              `INSERT INTO peserta (peserta_id, nim, nama_lengkap, gender, program_studi, batch_id, kamar, status_peserta, nomor_whatsapp, email, alamat, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-               ON CONFLICT(peserta_id) DO UPDATE SET
-                 nim=excluded.nim,
-                 nama_lengkap=excluded.nama_lengkap,
-                 gender=excluded.gender,
-                 program_studi=excluded.program_studi,
-                 batch_id=excluded.batch_id,
-                 kamar=excluded.kamar,
-                 status_peserta=excluded.status_peserta,
-                 nomor_whatsapp=excluded.nomor_whatsapp,
-                 email=excluded.email,
-                 alamat=excluded.alamat,
-                 updated_at=datetime('now')`
-            ).bind(
-              p.pesertaId || p.peserta_id,
-              p.nim,
-              p.namaLengkap || p.nama_lengkap,
-              p.gender || 'IKHWAN',
-              p.programStudi || p.program_studi || 'Umum',
-              p.batchId || p.batch_id || 'Batch 1',
-              p.kamar || '',
-              p.statusPeserta || p.status_peserta || 'AKTIF',
-              p.nomorWhatsApp || p.nomor_whatsapp || '',
-              p.email || '',
-              p.alamat || ''
-            )
-          );
-        }
-      }
-
-      if (body.absensi && Array.isArray(body.absensi)) {
-        for (const a of body.absensi) {
-          statements.push(
-            env.DB.prepare(
-              `INSERT INTO absensi (absensi_id, jadwal_id, nama_kegiatan, tanggal, peserta_id, status_absensi, keterangan_waktu, menit_keterlambatan, alasan_terlambat, catatan, waktu_scan, waktu_server, pengguna_id, musyrif_bertugas, sumber_absensi, status_validasi)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(absensi_id) DO UPDATE SET
-                 alasan_terlambat=excluded.alasan_terlambat,
-                 catatan=excluded.catatan,
-                 updated_at=datetime('now')`
-            ).bind(
-              a.absensiId || a.absensi_id,
-              a.jadwalId || a.jadwal_id,
-              a.namaKegiatan || a.nama_kegiatan,
-              a.tanggal,
-              a.pesertaId || a.peserta_id,
-              a.statusAbsensi || a.status_absensi || 'HADIR',
-              a.keteranganWaktu || a.keterangan_waktu || 'TEPAT_WAKTU',
-              a.menitKeterlambatan || a.menit_keterlambatan || 0,
-              a.alasanTerlambat || a.alasan_terlambat || '',
-              a.catatan || '',
-              a.waktuScan || a.waktu_scan || new Date().toISOString(),
-              a.waktuServer || a.waktu_server || new Date().toISOString(),
-              a.penggunaId || a.pengguna_id || 'U002',
-              a.musyrifBertugas || a.musyrif_bertugas || '',
-              a.sumberAbsensi || a.sumber_absensi || 'SCAN_QR',
-              a.statusValidasi || a.status_validasi || 'SAH'
-            )
-          );
-        }
-      }
-
-      if (statements.length > 0) {
-        await env.DB.batch(statements);
-      }
-
-      return jsonResponse({
-        success: true,
-        count: statements.length,
-        message: `Berhasil sinkronisasi ${statements.length} data ke Cloudflare D1!`,
-      });
-    }
-
-    return jsonResponse({ error: 'Endpoint API tidak ditemukan.' }, 404);
-  } catch (err: any) {
-    return jsonResponse({
-      success: false,
-      error: err.message || 'Kesalahan internal di Cloudflare D1 Worker',
-    }, 500);
+    return JSON.parse(text);
+  } catch {
+    throw new Error('Format JSON tidak valid.');
   }
 }
 
-/**
- * Render a customized 404 page for unknown URLs
- */
-function render404Page(requestedPath: string): Response {
-  const html = `<!doctype html>
-<html lang="id">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>404 - Halaman Tidak Ditemukan | BIMMA Absensi UNISA Bandung</title>
-  <meta name="robots" content="noindex, nofollow" />
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <style>
-    :root {
-      --primary: #064e3b;
-      --primary-light: #059669;
-      --bg: #f8faf9;
-      --text: #0f172a;
-      --muted: #64748b;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 1.5rem;
-      text-align: center;
-    }
-    .card {
-      background: #ffffff;
-      border: 1px solid #d1fae5;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.02);
-      border-radius: 1.5rem;
-      max-width: 32rem;
-      width: 100%;
-      padding: 2.5rem 2rem;
-    }
-    .badge {
-      display: inline-block;
-      padding: 0.35rem 0.85rem;
-      border-radius: 9999px;
-      background: #fee2e2;
-      color: #991b1b;
-      font-weight: 800;
-      font-size: 0.8rem;
-      letter-spacing: 0.05em;
-      margin-bottom: 1rem;
-      border: 1px solid #fecaca;
-    }
-    h1 {
-      font-size: 1.75rem;
-      font-weight: 900;
-      color: #064e3b;
-      line-height: 1.25;
-      margin-bottom: 0.75rem;
-    }
-    p {
-      color: var(--muted);
-      font-size: 0.95rem;
-      line-height: 1.6;
-      margin-bottom: 1.5rem;
-    }
-    code {
-      background: #f1f5f9;
-      padding: 0.2rem 0.45rem;
-      border-radius: 0.375rem;
-      font-size: 0.85rem;
-      color: #0f172a;
-      font-weight: 600;
-      word-break: break-all;
-    }
-    .btn-group {
-      display: flex;
-      gap: 0.75rem;
-      flex-direction: column;
-    }
-    @media (min-width: 480px) {
-      .btn-group { flex-direction: row; }
-    }
-    .btn {
-      flex: 1;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0.75rem 1.25rem;
-      border-radius: 0.875rem;
-      font-weight: 700;
-      font-size: 0.9rem;
-      text-decoration: none;
-      transition: all 0.15s ease;
-      cursor: pointer;
-    }
-    .btn-primary {
-      background: #047857;
-      color: #ffffff;
-      box-shadow: 0 4px 6px -1px rgba(4, 120, 87, 0.2);
-    }
-    .btn-primary:hover { background: #065f46; }
-    .btn-secondary {
-      background: #ffffff;
-      color: #064e3b;
-      border: 1px solid #a7f3d0;
-    }
-    .btn-secondary:hover { background: #ecfdf5; }
-    .footer {
-      margin-top: 2rem;
-      font-size: 0.75rem;
-      color: #94a3b8;
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="badge">STATUS 404 NOT FOUND</div>
-    <h1>Halaman Tidak Ditemukan</h1>
-    <p>
-      URL yang Anda tuju: <code>${requestedPath}</code> tidak terdaftar di sistem presensi BIMMA UNISA Bandung.
-    </p>
-    <div class="btn-group">
-      <a href="/" class="btn btn-primary">Kembali ke Beranda</a>
-      <a href="/login" class="btn btn-secondary">Login Petugas / Santri</a>
-    </div>
-  </div>
-  <div class="footer">
-    BIMMA Absensi • Pesantren Mahasiswa UNISA Bandung
-  </div>
-</body>
-</html>`;
+async function createSession(
+  env: Env,
+  role: Role,
+  userId: string | null,
+  pesertaId: string | null,
+): Promise<{ token: string; expiresAt: string }> {
+  const token = base64Url(randomBytes(32));
+  const tokenHash = await sha256(token);
+  const expiresAt = new Date(
+    Date.now() + SESSION_HOURS * 60 * 60 * 1000,
+  ).toISOString();
 
-  return new Response(html, {
-    status: 404,
-    headers: {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-    },
-  });
+  await env.DB.prepare(`
+    INSERT INTO sessions
+      (id, user_id, peserta_id, role, token_hash, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+    .bind(
+      newId('ses_'),
+      userId,
+      pesertaId,
+      role,
+      tokenHash,
+      expiresAt,
+    )
+    .run();
+
+  return { token, expiresAt };
 }
 
-/**
- * Main Worker Fetch Event Handler
- */
+async function authenticate(
+  request: Request,
+  env: Env,
+): Promise<Session | null> {
+  const header = request.headers.get('Authorization') ?? '';
+  const match = header.match(/^Bearer\s+([A-Za-z0-9_-]{20,})$/);
+
+  if (!match) return null;
+
+  const tokenHash = await sha256(match[1]);
+
+  const session = await env.DB.prepare(`
+    SELECT
+      s.id,
+      s.user_id,
+      s.peserta_id,
+      s.role
+    FROM sessions s
+    LEFT JOIN users u ON u.id = s.user_id
+    LEFT JOIN peserta p ON p.id = s.peserta_id
+    WHERE s.token_hash = ?
+      AND s.revoked_at IS NULL
+      AND s.expires_at > ?
+      AND (
+        (s.user_id IS NOT NULL AND u.status = 'AKTIF')
+        OR
+        (s.peserta_id IS NOT NULL AND p.status = 'AKTIF')
+      )
+    LIMIT 1
+  `)
+    .bind(tokenHash, new Date().toISOString())
+    .first<Session>();
+
+  return session ?? null;
+}
+
+function requireRole(
+  session: Session | null,
+  roles: Role[],
+): boolean {
+  return Boolean(session && roles.includes(session.role));
+}
+
+async function audit(
+  env: Env,
+  userId: string | null,
+  aksi: string,
+  entitas?: string,
+  entitasId?: string,
+): Promise<void> {
+  try {
+    await env.DB.prepare(`
+      INSERT INTO audit_logs
+        (id, user_id, aksi, entitas, entitas_id, detail_json)
+      VALUES (?, ?, ?, ?, ?, '{}')
+    `)
+      .bind(
+        newId('audit_'),
+        userId,
+        aksi,
+        entitas ?? null,
+        entitasId ?? null,
+      )
+      .run();
+  } catch {
+    // Kegagalan audit tidak boleh mengubah hasil transaksi utama.
+  }
+}
+
+async function login(
+  body: any,
+  env: Env,
+  origin: string,
+): Promise<Response> {
+  const key = String(body?.key ?? '').trim();
+  const password = typeof body?.password === 'string' ? body.password : '';
+
+  if (!key) {
+    return errorResponse('NIM atau username wajib diisi.', 400, origin);
+  }
+
+  // Staff login requires both username and password.
+  if (password) {
+    const row = await env.DB.prepare(`
+      SELECT id, username, password_hash, nama_lengkap, role, status
+      FROM users
+      WHERE (username = ? OR id = ?)
+        AND role IN ('ADMIN', 'PETUGAS')
+        AND status = 'AKTIF'
+      LIMIT 1
+    `)
+      .bind(key, key)
+      .first<any>();
+
+    if (!row) {
+      return errorResponse('Username atau kata sandi tidak valid.', 401, origin);
+    }
+
+    const verification = await verifyPassword(password, row.password_hash);
+
+    if (!verification.valid) {
+      return errorResponse('Username atau kata sandi tidak valid.', 401, origin);
+    }
+
+    if (verification.upgradedHash) {
+      await env.DB.prepare(`
+        UPDATE users
+        SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `)
+        .bind(verification.upgradedHash, row.id)
+        .run();
+    }
+
+    const session = await createSession(env, row.role, row.id, null);
+    await audit(env, row.id, 'LOGIN', 'users', row.id);
+
+    return json(
+      {
+        success: true,
+        token: session.token,
+        expiresAt: session.expiresAt,
+        user: safeUser(row),
+      },
+      200,
+      origin,
+    );
+  }
+
+  // Participant login by NIM/ID is intentionally limited to the
+  // participant's own dashboard. NIM is an identifier, not a secret.
+  const peserta = await env.DB.prepare(`
+    SELECT id, nim, nama, jurusan, gender, nomor_whatsapp, email,
+           alamat, tanggal_masuk, status
+    FROM peserta
+    WHERE (nim = ? OR id = ?)
+      AND status = 'AKTIF'
+    LIMIT 1
+  `)
+    .bind(key, key)
+    .first<any>();
+
+  if (!peserta) {
+    return errorResponse('Peserta tidak ditemukan atau tidak aktif.', 401, origin);
+  }
+
+  const session = await createSession(env, 'PESERTA', null, peserta.id);
+  const mappedPeserta = mapPeserta(peserta);
+
+  return json(
+    {
+      success: true,
+      token: session.token,
+      expiresAt: session.expiresAt,
+      user: {
+        id: peserta.id,
+        username: peserta.nim,
+        namaLengkap: peserta.nama,
+        role: 'PESERTA',
+        statusAktif: true,
+      },
+      peserta: mappedPeserta,
+    },
+    200,
+    origin,
+  );
+}
+
+async function getParticipantData(
+  env: Env,
+  pesertaId: string,
+): Promise<Record<string, unknown>> {
+  const peserta = await env.DB.prepare(`
+    SELECT * FROM peserta WHERE id = ? LIMIT 1
+  `)
+    .bind(pesertaId)
+    .first<any>();
+
+  const absensi = await env.DB.prepare(`
+    SELECT a.*
+    FROM absensi a
+    WHERE a.peserta_id = ?
+    ORDER BY a.waktu_server DESC
+  `)
+    .bind(pesertaId)
+    .all<any>();
+
+  const batchRows = await env.DB.prepare(`
+    SELECT b.*
+    FROM batch b
+    JOIN batch_peserta bp ON bp.batch_id = b.id
+    WHERE bp.peserta_id = ?
+  `)
+    .bind(pesertaId)
+    .all<any>();
+
+  const batchIds = batchRows.results.map((b: any) => b.id);
+  let jadwalRows: any[] = [];
+
+  if (batchIds.length) {
+    const placeholders = batchIds.map(() => '?').join(',');
+    const result = await env.DB.prepare(`
+      SELECT * FROM jadwal_kegiatan
+      WHERE batch_id IN (${placeholders})
+      ORDER BY tanggal, jam_mulai
+    `)
+      .bind(...batchIds)
+      .all<any>();
+
+    jadwalRows = result.results;
+  }
+
+  const izin = await env.DB.prepare(`
+    SELECT * FROM izin WHERE peserta_id = ? ORDER BY tanggal_mulai DESC
+  `)
+    .bind(pesertaId)
+    .all<any>();
+
+  const pembenaran = await env.DB.prepare(`
+    SELECT * FROM pembenaran WHERE peserta_id = ? ORDER BY tanggal DESC
+  `)
+    .bind(pesertaId)
+    .all<any>();
+
+  return {
+    peserta: peserta ? [mapPeserta(peserta)] : [],
+    absensi: absensi.results.map(mapAbsensi),
+    jadwal: jadwalRows.map(mapJadwal),
+    batch: batchRows.results.map(mapBatch),
+    izin: izin.results.map(mapIzin),
+    pembenaran: pembenaran.results.map(mapPembenaran),
+    musyrif: [],
+  };
+}
+
+async function getStaffData(env: Env): Promise<Record<string, unknown>> {
+  const [
+    peserta,
+    absensi,
+    jadwal,
+    batch,
+    izin,
+    pembenaran,
+    musyrif,
+  ] = await Promise.all([
+    env.DB.prepare('SELECT * FROM peserta ORDER BY nama').all<any>(),
+    env.DB.prepare('SELECT * FROM absensi ORDER BY waktu_server DESC').all<any>(),
+    env.DB.prepare('SELECT * FROM jadwal_kegiatan ORDER BY tanggal, jam_mulai').all<any>(),
+    env.DB.prepare('SELECT * FROM batch ORDER BY tanggal_mulai DESC').all<any>(),
+    env.DB.prepare('SELECT * FROM izin ORDER BY tanggal_mulai DESC').all<any>(),
+    env.DB.prepare('SELECT * FROM pembenaran ORDER BY tanggal DESC').all<any>(),
+    env.DB.prepare('SELECT * FROM musyrif ORDER BY nama').all<any>(),
+  ]);
+
+  return {
+    peserta: peserta.results.map(mapPeserta),
+    absensi: absensi.results.map(mapAbsensi),
+    jadwal: jadwal.results.map(mapJadwal),
+    batch: batch.results.map(mapBatch),
+    izin: izin.results.map(mapIzin),
+    pembenaran: pembenaran.results.map(mapPembenaran),
+    musyrif: musyrif.results.map((row: any) => ({
+      id: row.id,
+      nama: row.nama,
+      ...safeJson(row.data_json),
+    })),
+  };
+}
+
+function safeJson(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function syncData(
+  request: Request,
+  env: Env,
+  session: Session,
+  origin: string,
+): Promise<Response> {
+  if (request.method === 'GET') {
+    const data =
+      session.role === 'PESERTA'
+        ? await getParticipantData(env, session.peserta_id!)
+        : await getStaffData(env);
+
+    return json({ success: true, data }, 200, origin);
+  }
+
+  if (request.method !== 'POST') {
+    return errorResponse('Metode tidak didukung.', 405, origin);
+  }
+
+  if (!requireRole(session, ['ADMIN', 'PETUGAS'])) {
+    return errorResponse('Akses ditolak.', 403, origin);
+  }
+
+  const body = await readBody(request);
+  let savedPeserta = 0;
+  let savedAbsensi = 0;
+
+  const pesertaList = Array.isArray(body?.peserta) ? body.peserta : [];
+  const absensiList = Array.isArray(body?.absensi) ? body.absensi : [];
+
+  if (pesertaList.length > 5000 || absensiList.length > 10000) {
+    return errorResponse('Jumlah data dalam satu permintaan terlalu banyak.', 413, origin);
+  }
+
+  for (const p of pesertaList) {
+    const nim = String(p?.nim ?? p?.NIM ?? '').trim();
+    const nama = String(p?.nama ?? p?.namaLengkap ?? p?.nama_lengkap ?? '').trim();
+
+    if (!nim || !nama) continue;
+
+    const id = String(p?.id ?? p?.pesertaId ?? p?.peserta_id ?? nim).trim();
+
+    await env.DB.prepare(`
+      INSERT INTO peserta (
+        id, nim, nama, jurusan, gender, nomor_whatsapp,
+        email, alamat, tanggal_masuk, status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        nim = excluded.nim,
+        nama = excluded.nama,
+        jurusan = excluded.jurusan,
+        gender = excluded.gender,
+        nomor_whatsapp = excluded.nomor_whatsapp,
+        email = excluded.email,
+        alamat = excluded.alamat,
+        tanggal_masuk = excluded.tanggal_masuk,
+        status = excluded.status,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+      .bind(
+        id,
+        nim,
+        nama,
+        p?.jurusan ?? p?.programStudi ?? null,
+        p?.gender ?? null,
+        p?.nomorWhatsapp ?? p?.nomor_whatsapp ?? p?.noHp ?? null,
+        p?.email ?? null,
+        p?.alamat ?? null,
+        p?.tanggalMasuk ?? p?.tanggal_masuk ?? null,
+        p?.status ?? (p?.statusAktif === false ? 'NONAKTIF' : 'AKTIF'),
+      )
+      .run();
+
+    const batchId = p?.batchId ?? p?.batch_id;
+
+    if (batchId) {
+      const batchExists = await env.DB.prepare(
+        'SELECT id FROM batch WHERE id = ? LIMIT 1',
+      )
+        .bind(String(batchId))
+        .first();
+
+      if (batchExists) {
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO batch_peserta (batch_id, peserta_id)
+          VALUES (?, ?)
+        `)
+          .bind(String(batchId), id)
+          .run();
+      }
+    }
+
+    savedPeserta++;
+  }
+
+  for (const a of absensiList) {
+    const pesertaId = String(
+      a?.pesertaId ?? a?.peserta_id ?? '',
+    ).trim();
+
+    const jadwalId = String(
+      a?.jadwalId ?? a?.jadwal_id ?? a?.jadwalKegiatanId ?? '',
+    ).trim();
+
+    if (!pesertaId || !jadwalId) continue;
+
+    const [pesertaExists, jadwalExists] = await Promise.all([
+      env.DB.prepare('SELECT id FROM peserta WHERE id = ? LIMIT 1')
+        .bind(pesertaId)
+        .first(),
+      env.DB.prepare('SELECT id FROM jadwal_kegiatan WHERE id = ? LIMIT 1')
+        .bind(jadwalId)
+        .first(),
+    ]);
+
+    if (!pesertaExists || !jadwalExists) continue;
+
+    const status = String(
+      a?.status ?? a?.statusAbsensi ?? 'HADIR',
+    ).toUpperCase();
+
+    const allowedStatuses = [
+      'HADIR',
+      'IZIN',
+      'SAKIT',
+      'ALFA',
+      'TERLAMBAT',
+      'DISPENSASI',
+    ];
+
+    if (!allowedStatuses.includes(status)) continue;
+
+    const id = String(a?.id ?? a?.absensiId ?? newId('abs_'));
+    const waktuServer = a?.waktuServer ?? a?.waktu_server ?? new Date().toISOString();
+
+    await env.DB.prepare(`
+      INSERT INTO absensi (
+        id, peserta_id, jadwal_id, status, waktu_server, keterangan
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(peserta_id, jadwal_id) DO UPDATE SET
+        status = excluded.status,
+        waktu_server = excluded.waktu_server,
+        keterangan = excluded.keterangan,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+      .bind(
+        id,
+        pesertaId,
+        jadwalId,
+        status,
+        String(waktuServer),
+        a?.keterangan ?? null,
+      )
+      .run();
+
+    savedAbsensi++;
+  }
+
+  await audit(
+    env,
+    session.user_id,
+    'SYNC',
+    'data',
+    undefined,
+  );
+
+  return json(
+    {
+      success: true,
+      count: savedPeserta + savedAbsensi,
+      pesertaDisimpan: savedPeserta,
+      absensiDisimpan: savedAbsensi,
+      message: 'Permintaan sinkronisasi selesai diproses.',
+    },
+    200,
+    origin,
+  );
+}
+
+async function usersEndpoint(
+  request: Request,
+  env: Env,
+  session: Session,
+  origin: string,
+): Promise<Response> {
+  if (!requireRole(session, ['ADMIN'])) {
+    return errorResponse('Hanya admin yang dapat mengelola akun.', 403, origin);
+  }
+
+  if (request.method === 'GET') {
+    const result = await env.DB.prepare(`
+      SELECT id, username, nama_lengkap, role, status, created_at, updated_at
+      FROM users
+      ORDER BY username
+    `).all<any>();
+
+    return json(
+      {
+        success: true,
+        users: result.results.map((row: any) => ({
+          id: row.id,
+          username: row.username,
+          namaLengkap: row.nama_lengkap ?? row.username,
+          role: row.role,
+          statusAktif: row.status === 'AKTIF',
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        })),
+      },
+      200,
+      origin,
+    );
+  }
+
+  if (request.method !== 'POST') {
+    return errorResponse('Metode tidak didukung.', 405, origin);
+  }
+
+  const body = await readBody(request);
+  const id = String(body?.id ?? '').trim();
+  const username = String(body?.username ?? '').trim();
+  const password = typeof body?.password === 'string' ? body.password : '';
+  const role = String(body?.role ?? '').toUpperCase();
+
+  if (!username || !['ADMIN', 'PETUGAS'].includes(role)) {
+    return errorResponse('Username atau peran akun tidak valid.', 400, origin);
+  }
+
+  if (password.length < 10) {
+    return errorResponse('Kata sandi baru minimal 10 karakter.', 400, origin);
+  }
+
+  const passwordHash = await hashPassword(password);
+  const accountId = id || newId('usr_');
+  const namaLengkap = String(body?.namaLengkap ?? username).trim();
+  const status = body?.statusAktif === false ? 'NONAKTIF' : 'AKTIF';
+
+  await env.DB.prepare(`
+    INSERT INTO users (
+      id, username, password_hash, role, status
+    )
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      username = excluded.username,
+      password_hash = excluded.password_hash,
+      role = excluded.role,
+      status = excluded.status,
+      updated_at = CURRENT_TIMESTAMP
+  `)
+    .bind(accountId, username, passwordHash, role, status)
+    .run();
+
+  // The current migration has no dedicated nama_lengkap/gender columns.
+  // Store optional profile data in app_config only if a later schema adds
+  // support; never expose password material to the client.
+  await audit(env, session.user_id, 'SAVE_USER', 'users', accountId);
+
+  return json(
+    {
+      success: true,
+      id: accountId,
+      message: 'Akun berhasil disimpan.',
+    },
+    200,
+    origin,
+  );
+}
+
+async function deleteUser(
+  request: Request,
+  env: Env,
+  session: Session,
+  origin: string,
+): Promise<Response> {
+  if (!requireRole(session, ['ADMIN'])) {
+    return errorResponse('Hanya admin yang dapat menghapus akun.', 403, origin);
+  }
+
+  if (request.method !== 'POST') {
+    return errorResponse('Metode tidak didukung.', 405, origin);
+  }
+
+  const body = await readBody(request);
+  const id = String(body?.id ?? '').trim();
+
+  if (!id) return errorResponse('ID akun wajib diisi.', 400, origin);
+
+  if (session.user_id === id) {
+    return errorResponse('Kamu tidak dapat menghapus akun yang sedang digunakan.', 400, origin);
+  }
+
+  await env.DB.batch([
+    env.DB.prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
+      .bind(new Date().toISOString(), id),
+    env.DB.prepare('DELETE FROM users WHERE id = ?')
+      .bind(id),
+  ]);
+
+  await audit(env, session.user_id, 'DELETE_USER', 'users', id);
+
+  return json(
+    { success: true, message: 'Akun berhasil dihapus.' },
+    200,
+    origin,
+  );
+}
+
+async function routeApi(
+  request: Request,
+  env: Env,
+  origin: string,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const path = url.pathname.replace(/\/+$/, '');
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': origin,
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Max-Age': '86400',
+        Vary: 'Origin',
+      },
+    });
+  }
+
+  if (path === '/api/health' || path === '/api/d1/health') {
+    try {
+      await env.DB.prepare('SELECT 1 AS ok').first();
+      return json(
+        {
+          success: true,
+          status: 'ok',
+          database: 'Cloudflare D1',
+          environment: env.ENVIRONMENT ?? 'unknown',
+        },
+        200,
+        origin,
+      );
+    } catch {
+      return errorResponse('D1 belum tersedia atau migrasi belum dijalankan.', 503, origin);
+    }
+  }
+
+  if (!path.startsWith('/api/d1/')) {
+    return errorResponse('Endpoint tidak ditemukan.', 404, origin);
+  }
+
+  try {
+    if (path === '/api/d1/login' && request.method === 'POST') {
+      return await login(await readBody(request), env, origin);
+    }
+
+    if (path === '/api/d1/logout' && request.method === 'POST') {
+      const header = request.headers.get('Authorization') ?? '';
+      const match = header.match(/^Bearer\s+([A-Za-z0-9_-]{20,})$/);
+
+      if (match) {
+        await env.DB.prepare(`
+          UPDATE sessions SET revoked_at = ?
+          WHERE token_hash = ? AND revoked_at IS NULL
+        `)
+          .bind(new Date().toISOString(), await sha256(match[1]))
+          .run();
+      }
+
+      return json({ success: true, message: 'Sesi diakhiri.' }, 200, origin);
+    }
+
+    const session = await authenticate(request, env);
+
+    if (!session) {
+      return errorResponse('Sesi tidak valid atau sudah kedaluwarsa. Silakan login kembali.', 401, origin);
+    }
+
+    if (path === '/api/d1/sync') {
+      return await syncData(request, env, session, origin);
+    }
+
+    if (path === '/api/d1/users') {
+      return await usersEndpoint(request, env, session, origin);
+    }
+
+    if (path === '/api/d1/users/delete') {
+      return await deleteUser(request, env, session, origin);
+    }
+
+    return errorResponse('Endpoint tidak ditemukan.', 404, origin);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Ukuran permintaan terlalu besar.') {
+      return errorResponse(error.message, 413, origin);
+    }
+
+    if (error instanceof Error && error.message === 'Format JSON tidak valid.') {
+      return errorResponse(error.message, 400, origin);
+    }
+
+    // Do not send SQL or internal error details to the browser.
+    console.error('D1 API request failed:', error);
+    return errorResponse('Terjadi kesalahan pada server.', 500, origin);
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const pathname = url.pathname;
+    const configuredDomain = env.DOMAIN
+      ? new URL(env.DOMAIN).origin
+      : url.origin;
 
-    // 1. API Endpoints take highest precedence
-    if (pathname.startsWith('/api/')) {
-      return handleApiRequest(request, env);
+    const allowedOrigins = new Set([
+      configuredDomain,
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+    ]);
+
+    const requestOrigin = request.headers.get('Origin') ?? '';
+    const origin = allowedOrigins.has(requestOrigin)
+      ? requestOrigin
+      : '';
+
+    if (requestOrigin && !origin) {
+      return errorResponse('Origin tidak diizinkan.', 403);
     }
 
-    // 2. Compatibility alias: /biodata -> /biodata-mahasiswa
-    if (pathname === '/biodata') {
-      return Response.redirect(`${DOMAIN}/biodata-mahasiswa`, 301);
+    if (url.pathname.startsWith('/api/')) {
+      return routeApi(request, env, origin);
     }
 
-    // 3. Static Assets: Files with extensions or root static files
-    const isStaticAsset =
-      /\.[a-zA-Z0-9]+$/.test(pathname) ||
-      pathname === '/robots.txt' ||
-      pathname === '/sitemap.xml' ||
-      pathname === '/favicon.ico' ||
-      pathname === '/favicon.svg';
-
-    if (isStaticAsset) {
-      if (env.ASSETS) {
-        return env.ASSETS.fetch(request);
-      }
-      return new Response('Asset not found in development', { status: 404 });
-    }
-
-    // 4. Clean Path Route Validation
-    // Normalize trailing slash (except root)
-    const normalizedPath = pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
-    const meta = ROUTE_CONFIG[normalizedPath];
-
-    if (!meta) {
-      // Unknown path -> Return real HTTP 404!
-      return render404Page(pathname);
-    }
-
-    // 5. Valid HTML Route: Serve index.html with dynamically injected SEO metadata
-    if (env.ASSETS) {
-      const indexRequest = new Request(new URL('/', request.url), request);
-      const assetResponse = await env.ASSETS.fetch(indexRequest);
-
-      if (!assetResponse.ok) {
-        return assetResponse;
-      }
-
-      let html = await assetResponse.text();
-      const canonicalUrl = `${DOMAIN}${normalizedPath === '/' ? '/' : normalizedPath}`;
-
-      // Dynamically replace / inject SEO tags
-      html = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${meta.title}</title>`);
-      html = html.replace(
-        /<meta name="description"[\s\S]*?>/i,
-        `<meta name="description" content="${meta.description}" />`
-      );
-      html = html.replace(
-        /<link rel="canonical"[\s\S]*?>/i,
-        `<link rel="canonical" href="${canonicalUrl}" />`
-      );
-      html = html.replace(
-        /<meta name="robots"[\s\S]*?>/i,
-        `<meta name="robots" content="${meta.robots}" />`
-      );
-      html = html.replace(
-        /<meta property="og:title"[\s\S]*?>/i,
-        `<meta property="og:title" content="${meta.title}" />`
-      );
-      html = html.replace(
-        /<meta property="og:description"[\s\S]*?>/i,
-        `<meta property="og:description" content="${meta.description}" />`
-      );
-      html = html.replace(
-        /<meta property="og:url"[\s\S]*?>/i,
-        `<meta property="og:url" content="${canonicalUrl}" />`
-      );
-
-      return new Response(html, {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': meta.isPublic
-            ? 'public, max-age=3600, s-maxage=86400'
-            : 'no-cache, no-store, must-revalidate',
-        },
-      });
-    }
-
-    // Fallback if env.ASSETS is unavailable (e.g. mock test)
-    return new Response('ASSETS binding not active', { status: 500 });
+    // Preserve the existing frontend asset handler.
+    return env.ASSETS.fetch(request);
   },
 };
