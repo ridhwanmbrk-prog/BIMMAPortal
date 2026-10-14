@@ -71,14 +71,27 @@ export const PesertaPage: React.FC = () => {
   const jurusanList = Array.from(new Set(pesertaList.map((p) => p.programStudi)));
 
   const filtered = pesertaList.filter((p) => {
-    const matchQuery =
-      p.namaLengkap.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.nim.includes(searchTerm) ||
-      p.pesertaId.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchJurusan = filterJurusan === 'ALL' || p.programStudi === filterJurusan;
-    const matchBatch = filterBatch === 'ALL' || p.batchId === filterBatch;
-    return matchQuery && matchJurusan && matchBatch;
-  });
+  const namaLengkap = String(p.namaLengkap ?? "");
+  const nim = String(p.nim ?? "");
+  const pesertaId = String(p.pesertaId ?? "");
+  const programStudi = String(p.programStudi ?? "");
+  const batchId = String(p.batchId ?? "");
+
+  const query = searchTerm.toLowerCase();
+
+  const matchQuery =
+    namaLengkap.toLowerCase().includes(query) ||
+    nim.includes(searchTerm) ||
+    pesertaId.toLowerCase().includes(query);
+
+  const matchJurusan =
+    filterJurusan === "ALL" || programStudi === filterJurusan;
+
+  const matchBatch =
+    filterBatch === "ALL" || batchId === filterBatch;
+
+  return matchQuery && matchJurusan && matchBatch;
+});
 
   const handleOpenAdd = () => {
     setEditingPeserta(null);
