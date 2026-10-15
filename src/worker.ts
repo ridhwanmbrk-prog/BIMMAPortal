@@ -331,6 +331,77 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ success: true, message: 'Admin pertama berhasil dibuat. Hapus/nonaktifkan secret bootstrap setelah digunakan.' }, 201);
     }
 
+    // Participant login: QR payload is the participant's NIM.
+    // This keeps staff/admin login on the existing password-protected endpoint.
+    if ((path === '/login-peserta' || path === '/d1/login-peserta') && request.method === 'POST') {
+      const body = await request.json() as any;
+      const nim = String(body.nim || body.qrValue || body.key || '').trim();
+      if (!nim || nim.length > 64) {
+        return jsonResponse({ success: false, message: 'QR tidak valid.' }, 400);
+      }
+
+      // Inspect the existing D1 schema instead of assuming participant column names.
+      const columnsResult = await env.DB.prepare('PRAGMA table_info(peserta)').all<any>();
+      const columns = columnsResult.results || [];
+      const columnByName = new Map<string, string>(
+        columns.map((column: any) => [String(column.name).toLowerCase(), String(column.name)])
+      );
+      const nimColumn = ['nim', 'nim_mahasiswa', 'nomor_induk', 'nomorinduk']
+        .map(name => columnByName.get(name))
+        .find(Boolean);
+
+      if (!nimColumn) {
+        return jsonResponse({
+          success: false,
+          message: 'Kolom NIM tidak ditemukan pada tabel peserta. Login peserta belum dapat diproses.'
+        }, 503);
+      }
+
+      const quoteIdentifier = (value: string) => `"${value.replace(/"/g, '""')}"`;
+      const participant = await env.DB.prepare(
+        `SELECT * FROM peserta WHERE TRIM(CAST(${quoteIdentifier(nimColumn)} AS TEXT)) = ? LIMIT 1`
+      ).bind(nim).first<any>();
+
+      if (!participant) {
+        return jsonResponse({ success: false, message: 'NIM pada QR tidak ditemukan.' }, 401);
+      }
+
+      const statusColumn = ['status', 'status_aktif', 'statusaktif', 'aktif', 'is_active', 'isactive']
+        .map(name => columnByName.get(name))
+        .find(Boolean);
+      if (statusColumn) {
+        const rawStatus = participant[statusColumn];
+        const normalizedStatus = String(rawStatus ?? '').trim().toUpperCase();
+        const explicitlyInactive = rawStatus === 0 || rawStatus === false ||
+          ['NONAKTIF', 'NON-AKTIF', 'TIDAK AKTIF', 'INACTIVE', 'INAKTIF', 'FALSE', '0', 'TIDAK'].includes(normalizedStatus);
+        if (explicitlyInactive) {
+          return jsonResponse({ success: false, message: 'Peserta berstatus tidak aktif.' }, 403);
+        }
+      }
+
+      const participantIdColumn = ['peserta_id', 'pesertaid', 'id'].map(name => columnByName.get(name)).find(Boolean);
+      const participantId = String((participantIdColumn && participant[participantIdColumn]) || nim);
+      const nameColumn = ['nama_lengkap', 'namalengkap', 'nama', 'name'].map(name => columnByName.get(name)).find(Boolean);
+      const participantName = String((nameColumn && participant[nameColumn]) || nim);
+
+      const token = await createSession(env, { role: 'PESERTA' }, participantId);
+      return jsonResponse({
+        success: true,
+        token,
+        expiresIn: 604800,
+        type: 'PESERTA',
+        user: {
+          id: participantId,
+          username: nim,
+          namaLengkap: participantName,
+          role: 'PESERTA',
+          pesertaId: participantId,
+          statusAktif: true
+        },
+        peserta: participant
+      });
+    }
+
     if ((path === '/login' || path === '/d1/login') && request.method === 'POST') {
       const body = await request.json() as any;
       const key = String(body.key || body.username || '').trim();
