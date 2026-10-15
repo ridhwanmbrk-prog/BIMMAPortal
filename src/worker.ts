@@ -32,6 +32,7 @@ export interface Env {
   };
   DOMAIN?: string;
   ENVIRONMENT?: string;
+  ADMIN_BOOTSTRAP_SECRET?: string;
 }
 
 const DOMAIN = 'https://absensi.bimma-uab.my.id';
@@ -154,8 +155,126 @@ const ROUTE_CONFIG: Record<string, RouteMeta> = {
 };
 
 /**
- * Handle API endpoints for Cloudflare D1
+ * BIMMA Worker API security patch
  */
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: 210000, hash: 'SHA-256' }, key, 256
+  );
+  return `pbkdf2$210000$${bytesToBase64(salt)}$${bytesToBase64(new Uint8Array(bits))}`;
+}
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  if (!stored) return false;
+
+  // Support existing legacy plaintext hashes once, then upgrade them after a successful login.
+  if (!stored.startsWith('pbkdf2$')) return password === stored;
+
+  const parts = stored.split('$');
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
+  const iterations = Number(parts[1]);
+  if (!Number.isInteger(iterations) || iterations < 100000 || iterations > 1000000) return false;
+
+  try {
+    const salt = base64ToBytes(parts[2]);
+    const expected = base64ToBytes(parts[3]);
+    const key = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+    );
+    const actual = new Uint8Array(await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, expected.length * 8
+    ));
+    if (actual.length !== expected.length) return false;
+    let diff = 0;
+    for (let i = 0; i < actual.length; i++) diff |= actual[i] ^ expected[i];
+    return diff === 0;
+  } catch {
+    return false;
+  }
+}
+
+function safeUser(row: any) {
+  return {
+    id: row.id,
+    username: row.username,
+    namaLengkap: row.username,
+    role: row.role,
+    pesertaId: row.peserta_id || undefined,
+    statusAktif: row.status === 'AKTIF',
+  };
+}
+
+async function readBearer(request: Request): Promise<string | null> {
+  const header = request.headers.get('Authorization') || '';
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : null;
+}
+
+async function requireSession(request: Request, env: Env): Promise<any | null> {
+  const token = await readBearer(request);
+  if (!token) return null;
+  const tokenHash = await sha256Hex(token);
+  const session = await env.DB.prepare(`
+    SELECT s.id AS session_id, s.user_id, s.peserta_id, s.role, s.expires_at,
+           u.username, u.status
+    FROM sessions s
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > datetime('now')
+    LIMIT 1
+  `).bind(tokenHash).first<any>();
+
+  if (!session) return null;
+  if (session.user_id && (!session.username || session.status !== 'AKTIF')) return null;
+  return session;
+}
+
+function requireRole(session: any, roles: string[]): boolean {
+  return !!session && roles.includes(String(session.role || '').toUpperCase());
+}
+
+async function createSession(env: Env, user: any, pesertaId?: string | null): Promise<string> {
+  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = Array.from(tokenBytes, b => b.toString(16).padStart(2, '0')).join('');
+  const tokenHash = await sha256Hex(token);
+  const sessionId = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  if (user.id) {
+    await env.DB.prepare(`
+      INSERT INTO sessions (id, user_id, peserta_id, role, token_hash, expires_at, created_at)
+      VALUES (?, ?, NULL, ?, ?, ?, datetime('now'))
+    `).bind(sessionId, user.id, user.role, tokenHash, expiresAt).run();
+  } else {
+    await env.DB.prepare(`
+      INSERT INTO sessions (id, user_id, peserta_id, role, token_hash, expires_at, created_at)
+      VALUES (?, NULL, ?, ?, ?, ?, datetime('now'))
+    `).bind(sessionId, pesertaId, user.role, tokenHash, expiresAt).run();
+  }
+  return token;
+}
+
 async function handleApiRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api/, '');
@@ -164,210 +283,173 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
-  // 1. Health check (works even without D1 binding to test route)
   if (path === '/health' || path === '/d1/health') {
-    if (!env || !env.DB) {
-      return jsonResponse({
-        success: false,
-        connected: false,
-        message: 'D1 binding DB belum terhubung di runtime ini.',
-        databaseName: 'bimma-absensi-db',
-        databaseId: 'dd5dbf9a-56c0-4ee0-85df-a698c7c99e56',
-        timestamp: new Date().toISOString(),
-      }, 503);
-    }
-
     try {
-      const result = await env.DB.prepare('SELECT 1 as test').first();
+      const result = await env.DB.prepare('SELECT 1 AS test').first();
       return jsonResponse({
-        success: true,
-        connected: true,
-        databaseName: 'bimma-absensi-db',
+        success: true, connected: true, databaseName: 'bimma-absensi-db',
         databaseId: 'dd5dbf9a-56c0-4ee0-85df-a698c7c99e56',
-        test: result,
-        timestamp: new Date().toISOString(),
+        test: result, timestamp: new Date().toISOString()
       });
-    } catch (err: any) {
-      return jsonResponse({
-        success: false,
-        connected: false,
-        error: err.message,
-        databaseName: 'bimma-absensi-db',
-        databaseId: 'dd5dbf9a-56c0-4ee0-85df-a698c7c99e56',
-      }, 500);
+    } catch {
+      return jsonResponse({ success: false, connected: false, message: 'D1 tidak dapat diakses.' }, 503);
     }
   }
 
-  if (!env || !env.DB) {
-    return jsonResponse({
-      success: false,
-      connected: false,
-      message: 'Cloudflare D1 binding "DB" tidak terdeteksi pada environment ini.',
-      databaseId: 'dd5dbf9a-56c0-4ee0-85df-a698c7c99e56',
-      databaseName: 'bimma-absensi-db',
-    }, 503);
+  if (!env?.DB) {
+    return jsonResponse({ success: false, message: 'Binding D1 DB tidak tersedia.' }, 503);
   }
 
   try {
-    // 2. Query execution (POST /api/d1/query)
-    if ((path === '/query' || path === '/d1/query') && request.method === 'POST') {
-      const body = (await request.json()) as { sql: string; params?: any[] };
-      if (!body.sql) {
-        return jsonResponse({ error: 'SQL query parameter wajib diisi.' }, 400);
+    // One-time bootstrap: only creates the first admin if there are no admin users.
+    if (path === '/admin/bootstrap' && request.method === 'POST') {
+      if (!env.ADMIN_BOOTSTRAP_SECRET) {
+        return jsonResponse({ success: false, message: 'ADMIN_BOOTSTRAP_SECRET belum dikonfigurasi.' }, 503);
       }
-      const stmt = env.DB.prepare(body.sql);
-      const bound = body.params && body.params.length > 0 ? stmt.bind(...body.params) : stmt;
-      const res = await bound.all();
-      return jsonResponse({ success: true, results: res.results, meta: res.meta });
+      const supplied = request.headers.get('X-Admin-Bootstrap-Secret') || '';
+      if (supplied.length < 1 || supplied !== env.ADMIN_BOOTSTRAP_SECRET) {
+        return jsonResponse({ success: false, message: 'Secret bootstrap tidak valid.' }, 401);
+      }
+      const adminCount = await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM users WHERE role = 'ADMIN'"
+      ).first<any>();
+      if (Number(adminCount?.count || 0) > 0) {
+        return jsonResponse({ success: false, message: 'Admin sudah tersedia; bootstrap dinonaktifkan.' }, 409);
+      }
+      const body = await request.json() as any;
+      const username = String(body.username || '').trim().toLowerCase();
+      const password = String(body.password || '');
+      if (username.length < 3 || password.length < 12) {
+        return jsonResponse({ success: false, message: 'Username minimal 3 karakter dan password minimal 12 karakter.' }, 400);
+      }
+      const id = crypto.randomUUID();
+      const passwordHash = await hashPassword(password);
+      await env.DB.prepare(`
+        INSERT INTO users (id, username, password_hash, role, peserta_id, status, created_at, updated_at)
+        VALUES (?, ?, ?, 'ADMIN', NULL, 'AKTIF', datetime('now'), datetime('now'))
+      `).bind(id, username, passwordHash).run();
+      return jsonResponse({ success: true, message: 'Admin pertama berhasil dibuat. Hapus/nonaktifkan secret bootstrap setelah digunakan.' }, 201);
     }
 
-    // 3. Login Mahasantri / Petugas via D1 (POST /api/d1/login)
     if ((path === '/login' || path === '/d1/login') && request.method === 'POST') {
-      const body = (await request.json()) as { key: string; password?: string };
-      const key = (body.key || '').trim();
-      const keyLower = key.toLowerCase();
-
-      // Cek akun petugas/admin di tabel users D1 jika ada password
-      if (body.password) {
-        const userRow = (await env.DB.prepare(
-          'SELECT id, username, password_hash, nama_lengkap, role, gender, status_aktif FROM users WHERE (LOWER(username) = ? OR LOWER(id) = ?) AND status_aktif = 1'
-        ).bind(keyLower, keyLower).first()) as any;
-
-        if (userRow) {
-          if (userRow.password_hash === body.password) {
-            return jsonResponse({
-              success: true,
-              type: 'USER',
-              user: {
-                id: userRow.id,
-                username: userRow.username,
-                namaLengkap: userRow.nama_lengkap,
-                role: userRow.role,
-                gender: userRow.gender,
-                statusAktif: Boolean(userRow.status_aktif),
-              },
-            });
-          } else {
-            return jsonResponse({ success: false, message: 'Password tidak sesuai.' }, 401);
-          }
-        }
+      const body = await request.json() as any;
+      const key = String(body.key || body.username || '').trim();
+      const password = String(body.password || '');
+      if (!key || !password) {
+        return jsonResponse({ success: false, message: 'Username/NIM dan password wajib diisi.' }, 400);
       }
 
-      // Cek akun mahasantri di tabel peserta D1 (berdasarkan NIM atau ID)
-      const pesertaRow = (await env.DB.prepare(
-        'SELECT peserta_id, nim, nama_lengkap, gender, program_studi, batch_id, kamar, status_peserta, nomor_whatsapp, email, alamat FROM peserta WHERE nim = ? OR peserta_id = ?'
-      ).bind(key, key).first()) as any;
+      const user = await env.DB.prepare(`
+        SELECT id, username, password_hash, role, peserta_id, status
+        FROM users
+        WHERE lower(username) = lower(?) OR lower(id) = lower(?)
+        LIMIT 1
+      `).bind(key, key).first<any>();
 
-      if (pesertaRow) {
-        if (pesertaRow.status_peserta !== 'AKTIF') {
-          return jsonResponse({
-            success: false,
-            message: `Akun santri ${pesertaRow.nama_lengkap} berstatus ${pesertaRow.status_peserta}. Hubungi musyrif.`,
-          }, 403);
-        }
-
-        return jsonResponse({
-          success: true,
-          type: 'PESERTA',
-          user: {
-            id: `USER_${pesertaRow.peserta_id}`,
-            username: pesertaRow.nim,
-            namaLengkap: pesertaRow.nama_lengkap,
-            role: 'PESERTA',
-            statusAktif: true,
-            pesertaId: pesertaRow.peserta_id,
-            nim: pesertaRow.nim,
-            programStudi: pesertaRow.program_studi,
-            batchId: pesertaRow.batch_id,
-          },
-          peserta: pesertaRow,
-        });
+      if (!user || user.status !== 'AKTIF') {
+        return jsonResponse({ success: false, message: 'Akun tidak ditemukan atau tidak aktif.' }, 401);
+      }
+      if (!await verifyPassword(password, String(user.password_hash || ''))) {
+        return jsonResponse({ success: false, message: 'Username atau password salah.' }, 401);
       }
 
-      return jsonResponse({
-        success: false,
-        message: 'Username, NIM, atau ID santri tidak ditemukan di Cloudflare D1!',
-      }, 404);
+      // Upgrade legacy plaintext password to PBKDF2 after successful verification.
+      if (!String(user.password_hash).startsWith('pbkdf2$')) {
+        const upgraded = await hashPassword(password);
+        await env.DB.prepare(
+          "UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?"
+        ).bind(upgraded, user.id).run();
+      }
+
+      const token = await createSession(env, user);
+      return jsonResponse({ success: true, token, expiresIn: 604800, type: 'USER', user: safeUser(user) });
     }
 
-    // 4. Manajemen Akun Users / Kredensial Admin & Petugas (GET, POST, DELETE /api/d1/users)
+    if ((path === '/logout' || path === '/d1/logout') && request.method === 'POST') {
+      const token = await readBearer(request);
+      if (token) {
+        await env.DB.prepare(
+          "UPDATE sessions SET revoked_at = datetime('now') WHERE token_hash = ? AND revoked_at IS NULL"
+        ).bind(await sha256Hex(token)).run();
+      }
+      return jsonResponse({ success: true, message: 'Sesi telah diakhiri.' });
+    }
+
+    if (path === '/me' && request.method === 'GET') {
+      const session = await requireSession(request, env);
+      if (!session) return jsonResponse({ success: false, message: 'Sesi tidak valid atau sudah berakhir.' }, 401);
+      const user = await env.DB.prepare(
+        'SELECT id, username, role, peserta_id, status FROM users WHERE id = ?'
+      ).bind(session.user_id).first<any>();
+      return jsonResponse({ success: true, user: user ? safeUser(user) : {
+        id: session.peserta_id, role: session.role, pesertaId: session.peserta_id
+      }});
+    }
+
+    // No unauthenticated arbitrary SQL endpoint.
+    if (path === '/query' || path === '/d1/query') {
+      return jsonResponse({ success: false, message: 'Endpoint query SQL bebas dinonaktifkan.' }, 404);
+    }
+
     if ((path === '/users' || path === '/d1/users') && request.method === 'GET') {
-      const usersRes = await env.DB.prepare(
-        'SELECT id, username, password_hash, nama_lengkap, role, gender, status_aktif, created_at, updated_at FROM users ORDER BY created_at ASC'
-      ).all();
-      return jsonResponse({
-        success: true,
-        users: (usersRes.results || []).map((u: any) => ({
-          id: u.id,
-          username: u.username,
-          password: u.password_hash,
-          passwordHash: u.password_hash,
-          namaLengkap: u.nama_lengkap,
-          role: u.role,
-          gender: u.gender,
-          statusAktif: Boolean(u.status_aktif),
-          createdAt: u.created_at,
-          updatedAt: u.updated_at,
-        })),
-      });
+      const session = await requireSession(request, env);
+      if (!requireRole(session, ['ADMIN'])) return jsonResponse({ success: false, message: 'Hanya Admin yang boleh mengakses data akun.' }, session ? 403 : 401);
+      const result = await env.DB.prepare(
+        'SELECT id, username, role, peserta_id, status, created_at, updated_at FROM users ORDER BY created_at ASC'
+      ).all<any>();
+      return jsonResponse({ success: true, users: (result.results || []).map(safeUser) });
     }
 
     if ((path === '/users' || path === '/d1/users') && request.method === 'POST') {
-      const body = (await request.json()) as any;
-      const { id, username, password, namaLengkap, role, gender, statusAktif } = body;
-
-      if (!id || !username || !password || !namaLengkap) {
-        return jsonResponse({ success: false, message: 'ID, username, password, dan nama lengkap wajib diisi!' }, 400);
-      }
-
-      await env.DB.prepare(
-        `INSERT INTO users (id, username, password_hash, nama_lengkap, role, gender, status_aktif, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-         ON CONFLICT(id) DO UPDATE SET
-           username = excluded.username,
-           password_hash = excluded.password_hash,
-           nama_lengkap = excluded.nama_lengkap,
-           role = excluded.role,
-           gender = excluded.gender,
-           status_aktif = excluded.status_aktif,
-           updated_at = datetime('now')`
-      ).bind(
-        id,
-        username.trim().toLowerCase(),
-        password,
-        namaLengkap.trim(),
-        role || 'PETUGAS',
-        gender || 'IKHWAN',
-        statusAktif !== false ? 1 : 0
-      ).run();
-
-      return jsonResponse({
-        success: true,
-        message: `Akun ${username} (${namaLengkap}) berhasil disimpan ke Cloudflare D1 SQL!`,
-      });
+      const session = await requireSession(request, env);
+      if (!requireRole(session, ['ADMIN'])) return jsonResponse({ success: false, message: 'Hanya Admin yang boleh mengelola akun.' }, session ? 403 : 401);
+      const body = await request.json() as any;
+      const id = String(body.id || crypto.randomUUID());
+      const username = String(body.username || '').trim().toLowerCase();
+      const password = String(body.password || '');
+      const role = String(body.role || 'PETUGAS').toUpperCase();
+      const status = body.statusAktif === false || body.status === 'NONAKTIF' ? 'NONAKTIF' : 'AKTIF';
+      if (!username || !password) return jsonResponse({ success: false, message: 'Username dan password wajib diisi.' }, 400);
+      if (!['ADMIN', 'PETUGAS', 'PESERTA'].includes(role)) return jsonResponse({ success: false, message: 'Role tidak valid.' }, 400);
+      if (password.length < 12) return jsonResponse({ success: false, message: 'Password akun baru minimal 12 karakter.' }, 400);
+      const passwordHash = await hashPassword(password);
+      const pesertaId = body.pesertaId ? String(body.pesertaId) : null;
+      await env.DB.prepare(`
+        INSERT INTO users (id, username, password_hash, role, peserta_id, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+          username = excluded.username,
+          password_hash = excluded.password_hash,
+          role = excluded.role,
+          peserta_id = excluded.peserta_id,
+          status = excluded.status,
+          updated_at = datetime('now')
+      `).bind(id, username, passwordHash, role, pesertaId, status).run();
+      return jsonResponse({ success: true, message: 'Akun berhasil disimpan.' });
     }
 
     if ((path === '/users/delete' || path === '/d1/users/delete') && request.method === 'POST') {
-      const body = (await request.json()) as { id: string };
-      if (!body.id) {
-        return jsonResponse({ success: false, message: 'ID pengguna wajib disertakan.' }, 400);
+      const session = await requireSession(request, env);
+      if (!requireRole(session, ['ADMIN'])) return jsonResponse({ success: false, message: 'Hanya Admin yang boleh menghapus akun.' }, session ? 403 : 401);
+      const body = await request.json() as any;
+      const id = String(body.id || '');
+      if (!id) return jsonResponse({ success: false, message: 'ID pengguna wajib diisi.' }, 400);
+      if (id === session.user_id) return jsonResponse({ success: false, message: 'Admin tidak dapat menghapus akun yang sedang digunakan.' }, 400);
+      const target = await env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(id).first<any>();
+      if (!target) return jsonResponse({ success: false, message: 'Akun tidak ditemukan.' }, 404);
+      if (target.role === 'ADMIN') {
+        const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'ADMIN' AND status = 'AKTIF'").first<any>();
+        if (Number(count?.count || 0) <= 1) return jsonResponse({ success: false, message: 'Tidak dapat menghapus admin aktif terakhir.' }, 400);
       }
-
-      // Pastikan bukan menghapus admin terakhir
-      const countRes = await env.DB.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'ADMIN' AND status_aktif = 1").first<any>();
-      const userToDelete = await env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(body.id).first<any>();
-
-      if (userToDelete?.role === 'ADMIN' && (countRes?.count || 0) <= 1) {
-        return jsonResponse({ success: false, message: 'Tidak dapat menghapus admin utama satu-satunya!' }, 400);
-      }
-
-      await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(body.id).run();
-      return jsonResponse({ success: true, message: 'Akun berhasil dihapus dari Cloudflare D1.' });
+      await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id).run();
+      await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
+      return jsonResponse({ success: true, message: 'Akun dihapus.' });
     }
 
-    // 5. Sync Pull dari D1 (GET /api/d1/sync)
     if ((path === '/sync' || path === '/d1/sync') && request.method === 'GET') {
-      const [pesertaRes, absensiRes, jadwalRes, batchRes, izinRes, pembenaranRes, musyrifRes, usersRes] = await Promise.all([
+      const session = await requireSession(request, env);
+      if (!requireRole(session, ['ADMIN', 'PETUGAS'])) return jsonResponse({ success: false, message: 'Login Admin/Petugas diperlukan.' }, session ? 403 : 401);
+      const [pesertaRes, absensiRes, jadwalRes, batchRes, izinRes, pembenaranRes, musyrifRes] = await Promise.all([
         env.DB.prepare('SELECT * FROM peserta').all(),
         env.DB.prepare('SELECT * FROM absensi ORDER BY waktu_server DESC LIMIT 500').all(),
         env.DB.prepare('SELECT * FROM jadwal_kegiatan').all(),
@@ -375,117 +457,30 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
         env.DB.prepare('SELECT * FROM izin ORDER BY waktu_pengajuan DESC').all(),
         env.DB.prepare('SELECT * FROM pembenaran ORDER BY waktu_pengajuan DESC').all(),
         env.DB.prepare('SELECT * FROM musyrif').all(),
-        env.DB.prepare('SELECT id, username, password_hash, nama_lengkap, role, gender, status_aktif FROM users').all(),
       ]);
-
-      return jsonResponse({
-        success: true,
-        data: {
-          peserta: pesertaRes.results || [],
-          absensi: absensiRes.results || [],
-          jadwal: jadwalRes.results || [],
-          batch: batchRes.results || [],
-          izin: izinRes.results || [],
-          pembenaran: pembenaranRes.results || [],
-          musyrif: musyrifRes.results || [],
-          users: usersRes.results || [],
-        },
-      });
+      return jsonResponse({ success: true, data: {
+        peserta: pesertaRes.results || [], absensi: absensiRes.results || [],
+        jadwal: jadwalRes.results || [], batch: batchRes.results || [],
+        izin: izinRes.results || [], pembenaran: pembenaranRes.results || [],
+        musyrif: musyrifRes.results || []
+      }});
     }
 
-    // 6. Sync Push ke D1 (POST /api/d1/sync)
+    // Keep write sync disabled until each write path is validated against the current schema
+    // and has role-specific authorization. This avoids silent/unsafe mass overwrites.
     if ((path === '/sync' || path === '/d1/sync') && request.method === 'POST') {
-      const body = (await request.json()) as {
-        peserta?: any[];
-        absensi?: any[];
-      };
-
-      const statements: D1PreparedStatement[] = [];
-
-      if (body.peserta && Array.isArray(body.peserta)) {
-        for (const p of body.peserta) {
-          statements.push(
-            env.DB.prepare(
-              `INSERT INTO peserta (peserta_id, nim, nama_lengkap, gender, program_studi, batch_id, kamar, status_peserta, nomor_whatsapp, email, alamat, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-               ON CONFLICT(peserta_id) DO UPDATE SET
-                 nim=excluded.nim,
-                 nama_lengkap=excluded.nama_lengkap,
-                 gender=excluded.gender,
-                 program_studi=excluded.program_studi,
-                 batch_id=excluded.batch_id,
-                 kamar=excluded.kamar,
-                 status_peserta=excluded.status_peserta,
-                 nomor_whatsapp=excluded.nomor_whatsapp,
-                 email=excluded.email,
-                 alamat=excluded.alamat,
-                 updated_at=datetime('now')`
-            ).bind(
-              p.pesertaId || p.peserta_id,
-              p.nim,
-              p.namaLengkap || p.nama_lengkap,
-              p.gender || 'IKHWAN',
-              p.programStudi || p.program_studi || 'Umum',
-              p.batchId || p.batch_id || 'Batch 1',
-              p.kamar || '',
-              p.statusPeserta || p.status_peserta || 'AKTIF',
-              p.nomorWhatsApp || p.nomor_whatsapp || '',
-              p.email || '',
-              p.alamat || ''
-            )
-          );
-        }
-      }
-
-      if (body.absensi && Array.isArray(body.absensi)) {
-        for (const a of body.absensi) {
-          statements.push(
-            env.DB.prepare(
-              `INSERT INTO absensi (absensi_id, jadwal_id, nama_kegiatan, tanggal, peserta_id, status_absensi, keterangan_waktu, menit_keterlambatan, alasan_terlambat, catatan, waktu_scan, waktu_server, pengguna_id, musyrif_bertugas, sumber_absensi, status_validasi)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(absensi_id) DO UPDATE SET
-                 alasan_terlambat=excluded.alasan_terlambat,
-                 catatan=excluded.catatan,
-                 updated_at=datetime('now')`
-            ).bind(
-              a.absensiId || a.absensi_id,
-              a.jadwalId || a.jadwal_id,
-              a.namaKegiatan || a.nama_kegiatan,
-              a.tanggal,
-              a.pesertaId || a.peserta_id,
-              a.statusAbsensi || a.status_absensi || 'HADIR',
-              a.keteranganWaktu || a.keterangan_waktu || 'TEPAT_WAKTU',
-              a.menitKeterlambatan || a.menit_keterlambatan || 0,
-              a.alasanTerlambat || a.alasan_terlambat || '',
-              a.catatan || '',
-              a.waktuScan || a.waktu_scan || new Date().toISOString(),
-              a.waktuServer || a.waktu_server || new Date().toISOString(),
-              a.penggunaId || a.pengguna_id || 'U002',
-              a.musyrifBertugas || a.musyrif_bertugas || '',
-              a.sumberAbsensi || a.sumber_absensi || 'SCAN_QR',
-              a.statusValidasi || a.status_validasi || 'SAH'
-            )
-          );
-        }
-      }
-
-      if (statements.length > 0) {
-        await env.DB.batch(statements);
-      }
-
+      const session = await requireSession(request, env);
+      if (!requireRole(session, ['ADMIN'])) return jsonResponse({ success: false, message: 'Hanya Admin yang boleh melakukan sinkronisasi tulis.' }, session ? 403 : 401);
       return jsonResponse({
-        success: true,
-        count: statements.length,
-        message: `Berhasil sinkronisasi ${statements.length} data ke Cloudflare D1!`,
-      });
+        success: false,
+        message: 'Sinkronisasi tulis sementara dinonaktifkan saat pengamanan API. Aktifkan kembali setelah mapping seluruh tabel diverifikasi.'
+      }, 501);
     }
 
-    return jsonResponse({ error: 'Endpoint API tidak ditemukan.' }, 404);
+    return jsonResponse({ success: false, message: 'Endpoint API tidak ditemukan.' }, 404);
   } catch (err: any) {
-    return jsonResponse({
-      success: false,
-      error: err.message || 'Kesalahan internal di Cloudflare D1 Worker',
-    }, 500);
+    // Do not leak SQL, schema details, or secrets in public error responses.
+    return jsonResponse({ success: false, message: 'Terjadi kesalahan internal pada API.' }, 500);
   }
 }
 
