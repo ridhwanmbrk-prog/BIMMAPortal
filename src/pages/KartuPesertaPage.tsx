@@ -31,12 +31,12 @@ export const KartuPesertaPage: React.FC = () => {
     setPesertaList(list);
     setBatches(getItems<Batch>('BATCH'));
 
-    // Pre-generate QR Data URLs (hanya memuat NIM)
+    // Pre-generate QR Data URLs dengan payload ID peserta-NIM
     const genQrs = async () => {
       const qrs: Record<string, string> = {};
       for (const p of list) {
         try {
-          const dataUrl = await QRCode.toDataURL(p.nim, {
+          const dataUrl = await QRCode.toDataURL(`${p.pesertaId}-${p.nim}`, {
             margin: 1,
             width: 180,
             color: {
@@ -119,7 +119,7 @@ export const KartuPesertaPage: React.FC = () => {
       doc.setFont('helvetica', 'normal');
       doc.text(santri.programStudi, 27, 30, { align: 'center' });
 
-      // QR Code Box (Hanya memuat NIM)
+      // QR Code berisi gabungan ID peserta-NIM
       const qrUrl = qrImages[santri.pesertaId];
       if (qrUrl) {
         doc.addImage(qrUrl, 'PNG', 12, 34, 30, 30);
@@ -366,7 +366,7 @@ export const KartuPesertaPage: React.FC = () => {
                   {/* QR Box */}
                   <div className="w-32 h-32 p-1.5 bg-white border border-slate-200 rounded-2xl shadow-xs flex items-center justify-center mb-2.5">
                     {qr ? (
-                      <img src={qr} alt={`QR NIM ${santri.nim}`} className="w-full h-full object-contain" />
+                      <img src={qr} alt={`QR peserta ${santri.pesertaId} - NIM ${santri.nim}`} className="w-full h-full object-contain" />
                     ) : (
                       <div className="text-[10px] text-slate-400">Loading QR...</div>
                     )}
