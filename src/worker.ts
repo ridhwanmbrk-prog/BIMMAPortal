@@ -331,13 +331,20 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ success: true, message: 'Admin pertama berhasil dibuat. Hapus/nonaktifkan secret bootstrap setelah digunakan.' }, 201);
     }
 
-    // Participant login: QR payload is the participant's NIM.
-    // This keeps staff/admin login on the existing password-protected endpoint.
+    // Participant login: QR payload format is "pesertaId-NIM".
+    // Split at the final hyphen so participant IDs may themselves contain hyphens.
+    // Staff/admin login remains on the existing password-protected endpoint.
     if ((path === '/login-peserta' || path === '/d1/login-peserta') && request.method === 'POST') {
       const body = await request.json() as any;
-      const nim = String(body.nim || body.qrValue || body.key || '').trim();
-      if (!nim || nim.length > 64) {
-        return jsonResponse({ success: false, message: 'QR tidak valid.' }, 400);
+      const qrPayload = String(body.qrValue || body.nim || body.key || '').trim();
+      const separatorIndex = qrPayload.lastIndexOf('-');
+      if (!qrPayload || qrPayload.length > 256 || separatorIndex <= 0 || separatorIndex === qrPayload.length - 1) {
+        return jsonResponse({ success: false, message: 'Format QR tidak valid. QR harus berisi ID peserta-NIM.' }, 400);
+      }
+      const participantIdFromQr = qrPayload.slice(0, separatorIndex).trim();
+      const nim = qrPayload.slice(separatorIndex + 1).trim();
+      if (!participantIdFromQr || !nim || nim.includes('-')) {
+        return jsonResponse({ success: false, message: 'Format QR tidak valid. Periksa ID peserta dan NIM.' }, 400);
       }
 
       // Inspect the existing D1 schema instead of assuming participant column names.
@@ -349,21 +356,24 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       const nimColumn = ['nim', 'nim_mahasiswa', 'nomor_induk', 'nomorinduk']
         .map(name => columnByName.get(name))
         .find(Boolean);
+      const participantIdColumn = ['peserta_id', 'pesertaid', 'id']
+        .map(name => columnByName.get(name))
+        .find(Boolean);
 
-      if (!nimColumn) {
+      if (!nimColumn || !participantIdColumn) {
         return jsonResponse({
           success: false,
-          message: 'Kolom NIM tidak ditemukan pada tabel peserta. Login peserta belum dapat diproses.'
+          message: 'Kolom ID peserta atau NIM tidak ditemukan pada tabel peserta. Login belum dapat diproses.'
         }, 503);
       }
 
       const quoteIdentifier = (value: string) => `"${value.replace(/"/g, '""')}"`;
       const participant = await env.DB.prepare(
-        `SELECT * FROM peserta WHERE TRIM(CAST(${quoteIdentifier(nimColumn)} AS TEXT)) = ? LIMIT 1`
-      ).bind(nim).first<any>();
+        `SELECT * FROM peserta WHERE TRIM(CAST(${quoteIdentifier(participantIdColumn)} AS TEXT)) = ? AND TRIM(CAST(${quoteIdentifier(nimColumn)} AS TEXT)) = ? LIMIT 1`
+      ).bind(participantIdFromQr, nim).first<any>();
 
       if (!participant) {
-        return jsonResponse({ success: false, message: 'NIM pada QR tidak ditemukan.' }, 401);
+        return jsonResponse({ success: false, message: 'ID peserta dan NIM pada QR tidak cocok dengan data peserta.' }, 401);
       }
 
       const statusColumn = ['status', 'status_aktif', 'statusaktif', 'aktif', 'is_active', 'isactive']
@@ -379,8 +389,7 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
         }
       }
 
-      const participantIdColumn = ['peserta_id', 'pesertaid', 'id'].map(name => columnByName.get(name)).find(Boolean);
-      const participantId = String((participantIdColumn && participant[participantIdColumn]) || nim);
+      const participantId = String(participant[participantIdColumn] || participantIdFromQr);
       const nameColumn = ['nama_lengkap', 'namalengkap', 'nama', 'name'].map(name => columnByName.get(name)).find(Boolean);
       const participantName = String((nameColumn && participant[nameColumn]) || nim);
 
