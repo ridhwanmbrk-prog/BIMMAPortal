@@ -1046,7 +1046,7 @@ export function getKegiatanSedangBerlangsung(customList?: JadwalKegiatan[]): {
   };
 }
 
-// Login Otomatis Peserta / Mahasantri Menggunakan QR Code atau NIM (D1 SQL First / Cache Supported)
+ // Login Otomatis Peserta / Mahasantri Menggunakan QR Code atau NIM
 
 export async function loginPesertaByNimOrId(
   nimOrId: string,
@@ -1066,13 +1066,11 @@ export async function loginPesertaByNimOrId(
     if (!result.success || !result.user) {
       return {
         success: false,
-        message: result.message || 'Login peserta ditolak server.',
+        message: result.message || 'Login peserta gagal diverifikasi.',
       };
     }
 
-    const peserta = result.peserta;
-
-    if (!peserta) {
+    if (!result.peserta) {
       clearD1Session();
       return {
         success: false,
@@ -1082,9 +1080,18 @@ export async function loginPesertaByNimOrId(
 
     setCurrentUser(result.user);
 
+    addAuditLog({
+      penggunaId: result.user.id,
+      aksi: 'LOGIN_QR_PESERTA',
+      jenisEntitas: 'PESERTA',
+      entitasId: result.user.pesertaId || result.user.id,
+      nilaiSesudah: 'Login QR peserta terverifikasi server',
+      statusAksi: 'BERHASIL',
+    });
+
     return {
       success: true,
-      message: 'Login berhasil.',
+      message: result.message || 'Login berhasil.',
     };
   } catch {
     clearD1Session();
@@ -1095,42 +1102,6 @@ export async function loginPesertaByNimOrId(
     };
   }
 }
-
-
-const result = await d1LoginPeserta(clean);
-
-if (!result.success || !result.user) {
-  return {
-    success: false,
-    message: result.message || 'Login peserta gagal diverifikasi.',
-  };
-}
-
-if (!result.peserta) {
-  clearD1Session();
-
-  return {
-    success: false,
-    message: 'Data peserta tidak ditemukan di server.',
-  };
-}
-
-setCurrentUser(result.user);
-
-addAuditLog({
-  penggunaId: result.user.id,
-  aksi: 'LOGIN_QR_PESERTA',
-  jenisEntitas: 'PESERTA',
-  entitasId: result.user.pesertaId || result.user.id,
-  nilaiSesudah: `Login QR peserta terverifikasi server`,
-  statusAksi: 'BERHASIL',
-});
-
-return {
-  success: true,
-  user: result.user,
-  message: result.message,
-};
 
 // Musyrif CRUD Helpers (Khusus Admin)
 export function saveMusyrif(musyrif: Musyrif): void {
