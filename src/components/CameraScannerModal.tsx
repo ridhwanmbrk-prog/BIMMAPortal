@@ -368,8 +368,47 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
         return;
       }
 
-      const result = await processQrScan(cleanText, activeNow.jadwalId);
-      triggerToast(result, cleanText);
+      c
+      // QR baru: pesertaId-nim. Validasi keduanya sebelum mencatat presensi.
+      let nimUntukAbsensi = cleanText;
+      const pemisahTerakhir = cleanText.lastIndexOf('-');
+
+      if (pemisahTerakhir > 0) {
+        const qrPesertaId = cleanText.slice(0, pemisahTerakhir).trim();
+        const qrNim = cleanText.slice(pemisahTerakhir + 1).trim();
+
+        const pesertaCocok = getItems<Peserta>('PESERTA').find(
+          (p) =>
+            String(p.pesertaId).trim() === qrPesertaId &&
+            String(p.nim).trim() === qrNim
+        );
+
+        if (!pesertaCocok) {
+          playFeedback(false);
+          setToast({
+            show: true,
+            type: 'error',
+            title: 'QR PESERTA TIDAK VALID',
+            message: 'ID peserta dan NIM tidak cocok dengan data peserta.',
+            waktu: new Date().toLocaleTimeString('id-ID'),
+          });
+
+          if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+          toastTimeoutRef.current = setTimeout(() => {
+            setToast((prev) => ({ ...prev, show: false }));
+          }, 4500);
+          return;
+        }
+
+        nimUntukAbsensi = pesertaCocok.nim;
+      }
+
+      const result = await processQrScan(
+        nimUntukAbsensi,
+        activeNow.jadwalId
+      );
+      triggerToast(result, nimUntukAbsensi);
+
     } catch (err: unknown) {
       triggerToast(
         {
