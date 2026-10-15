@@ -15,12 +15,14 @@ import {
   recordAbsensiToD1,
   syncAbsensiToD1,
   d1,
+  d1LoginPeserta,
   d1LoginStaff,
   d1FetchUsers,
   d1SaveUser,
   d1DeleteUser,
   fetchFullDataFromD1,
   checkD1Status,
+  clearD1Session,
   D1Status,
 } from './services/d1Storage';
 
