@@ -106,29 +106,50 @@ export async function checkD1Status(): Promise<D1Status> {
 }
 
 // 2. Login peserta
+
 export async function d1LoginPeserta(
   nimOrId: string,
 ): Promise<{ success: boolean; user?: User; peserta?: Peserta; message: string }> {
+  clearD1Session();
+
+  const key = nimOrId.trim();
+
+  if (!key) {
+    return {
+      success: false,
+      message: 'QR peserta tidak terbaca.',
+    };
+  }
+
   try {
     const res = await d1Request(
-      '/login',
+      '/login-peserta',
       {
         method: 'POST',
-        body: JSON.stringify({ key: nimOrId.trim() }),
+        body: JSON.stringify({ key }),
       },
       false,
     );
 
     const data = await readResponse(res);
 
-    if (!res.ok || !data.success || !data.user) {
+    if (!res.ok || data.success !== true || !data.user || !data.token) {
+      clearD1Session();
+
       return {
         success: false,
-        message: data.message || 'Login peserta ditolak oleh server.',
+        message: data.message || 'QR peserta tidak berhasil diverifikasi.',
       };
     }
 
     rememberLoginToken(data);
+
+    if (!getToken()) {
+      return {
+        success: false,
+        message: 'Token sesi tidak dapat disimpan. Login dibatalkan.',
+      };
+    }
 
     return {
       success: true,
@@ -137,13 +158,16 @@ export async function d1LoginPeserta(
       message: 'Login peserta berhasil diverifikasi server.',
     };
   } catch (err) {
+    clearD1Session();
     console.warn('D1 login peserta gagal:', err);
+
     return {
       success: false,
-      message: 'Endpoint login D1 tidak dapat dihubungi.',
+      message: 'Server login peserta tidak dapat dihubungi.',
     };
   }
 }
+
 
 // 3. Sinkronisasi data peserta
 export async function syncSantriToD1(
