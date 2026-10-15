@@ -134,6 +134,7 @@ function mapPembenaran(row: any): Record<string, unknown> {
   };
 }
 
+
 function safeUser(row: any): Record<string, unknown> {
   return {
     id: row.id,
@@ -150,11 +151,10 @@ function mapPeserta(row: any): Record<string, unknown> {
     id: row.peserta_id,
     pesertaId: row.peserta_id,
     nim: row.nim ?? '',
-    namaLengkap: row.nama_lengkap ?? '',
     nama: row.nama_lengkap ?? '',
+    namaLengkap: row.nama_lengkap ?? '',
     jurusan: row.program_studi ?? '',
     programStudi: row.program_studi ?? '',
-    fakultas: row.fakultas ?? '',
     gender: row.gender ?? '',
     batchId: row.batch_id ?? '',
     kamar: row.kamar ?? '',
