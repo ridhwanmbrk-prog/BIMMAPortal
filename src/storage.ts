@@ -14,7 +14,7 @@ import {
   syncSantriToD1,
   recordAbsensiToD1,
   syncAbsensiToD1,
-  d1LoginPeserta,
+  d1,
   d1LoginStaff,
   d1FetchUsers,
   d1SaveUser,
@@ -1045,56 +1045,90 @@ export function getKegiatanSedangBerlangsung(customList?: JadwalKegiatan[]): {
 }
 
 // Login Otomatis Peserta / Mahasantri Menggunakan QR Code atau NIM (D1 SQL First / Cache Supported)
-export function loginPesertaByNimOrId(nimOrId: string): { success: boolean; user?: User; message: string } {
+
+export async function loginPesertaByNimOrId(
+  nimOrId: string,
+): Promise<{ success: boolean; message: string }> {
   const clean = nimOrId.trim();
-  const pesertaList = getItems<Peserta>('PESERTA');
-  const target = pesertaList.find((p) => p.nim === clean || p.pesertaId === clean);
 
-  // Verifikasi background dengan Cloudflare D1
-  d1LoginPeserta(clean).catch(() => {});
-
-  if (!target) {
+  if (!clean) {
     return {
       success: false,
-      message: `Santri dengan NIM/ID "${clean}" tidak ditemukan dalam database Cloudflare D1 / sistem!`,
+      message: 'QR peserta tidak terbaca.',
     };
   }
 
-  if (target.statusPeserta !== 'AKTIF') {
+  try {
+    const result = await d1LoginPeserta(clean);
+
+    if (!result.success || !result.user) {
+      return {
+        success: false,
+        message: result.message || 'Login peserta ditolak server.',
+      };
+    }
+
+    const peserta = result.peserta;
+
+    if (!peserta) {
+      clearD1Session();
+      return {
+        success: false,
+        message: 'Data peserta tidak ditemukan di server.',
+      };
+    }
+
+    setCurrentUser(result.user);
+
+    return {
+      success: true,
+      message: 'Login berhasil.',
+    };
+  } catch {
+    clearD1Session();
+
     return {
       success: false,
-      message: `Akun santri ${target.namaLengkap} berstatus ${target.statusPeserta}. Hubungi admin.`,
+      message: 'Server tidak dapat memverifikasi peserta.',
     };
   }
+}
 
-  const user: User = {
-    id: `USER_${target.pesertaId}`,
-    namaLengkap: target.namaLengkap,
-    username: target.nim,
-    role: 'PESERTA',
-    statusAktif: true,
-    pesertaId: target.pesertaId,
-    nim: target.nim,
-    programStudi: target.programStudi,
-    batchId: target.batchId,
-  };
 
-  setCurrentUser(user);
-  addAuditLog({
-    penggunaId: user.id,
-    aksi: 'LOGIN_QR_PESERTA',
-    jenisEntitas: 'PESERTA',
-    entitasId: target.pesertaId,
-    nilaiSesudah: `Login Mahasantri: ${target.namaLengkap} (${target.nim}) [D1 Synced]`,
-    statusAksi: 'BERHASIL',
-  });
+const result = await d1LoginPeserta(clean);
 
+if (!result.success || !result.user) {
   return {
-    success: true,
-    user,
-    message: `Selamat datang, ${target.namaLengkap}!`,
+    success: false,
+    message: result.message || 'Login peserta gagal diverifikasi.',
   };
 }
+
+if (!result.peserta) {
+  clearD1Session();
+
+  return {
+    success: false,
+    message: 'Data peserta tidak ditemukan di server.',
+  };
+}
+
+setCurrentUser(result.user);
+
+addAuditLog({
+  penggunaId: result.user.id,
+  aksi: 'LOGIN_QR_PESERTA',
+  jenisEntitas: 'PESERTA',
+  entitasId: result.user.pesertaId || result.user.id,
+  nilaiSesudah: `Login QR peserta terverifikasi server`,
+  statusAksi: 'BERHASIL',
+});
+
+return {
+  success: true,
+  user: result.user,
+  message: result.message,
+};
 
 // Musyrif CRUD Helpers (Khusus Admin)
 export function saveMusyrif(musyrif: Musyrif): void {
