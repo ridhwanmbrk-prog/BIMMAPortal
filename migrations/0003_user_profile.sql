@@ -1,2 +1,0 @@
-ALTER TABLE users ADD COLUMN nama_lengkap TEXT;
-ALTER TABLE users ADD COLUMN gender TEXT;
