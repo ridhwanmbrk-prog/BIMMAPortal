@@ -7,6 +7,9 @@ CREATE TABLE IF NOT EXISTS batch (
   tanggal_mulai TEXT NOT NULL,
   tanggal_selesai TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'AKTIF',
+  tahun TEXT,
+  keterangan TEXT,
+  data_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -22,6 +25,7 @@ CREATE TABLE IF NOT EXISTS peserta (
   alamat TEXT,
   tanggal_masuk TEXT,
   status TEXT NOT NULL DEFAULT 'AKTIF',
+  data_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -70,6 +74,23 @@ CREATE TABLE IF NOT EXISTS izin (
   tanggal_selesai TEXT NOT NULL,
   alasan TEXT,
   status TEXT NOT NULL DEFAULT 'MENUNGGU',
+  jenis_izin TEXT,
+  waktu_mulai TEXT,
+  waktu_selesai TEXT,
+  diajukan_oleh TEXT,
+  waktu_pengajuan TEXT,
+  diputuskan_oleh TEXT,
+  waktu_keputusan TEXT,
+  catatan_admin TEXT,
+  bukti_file_id TEXT,
+  nomor_surat TEXT,
+  kode_verifikasi TEXT,
+  status_kedatangan TEXT,
+  waktu_kedatangan_kembali TEXT,
+  petugas_verifikasi TEXT,
+  catatan_kedatangan TEXT,
+  alasan_terlambat TEXT,
+  data_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (peserta_id) REFERENCES peserta(id)
