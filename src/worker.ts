@@ -795,8 +795,16 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
     }
 
     return jsonResponse({ success: false, message: 'Endpoint API tidak ditemukan.' }, 404);
-  } catch (err: any) {
-    // Do not leak SQL, schema details, or secrets in public error responses.
+  } catch (err: unknown) {
+    // Keep diagnostics in Workers Logs without exposing SQL details or secrets to clients.
+    const diagnostic = err instanceof Error
+      ? { name: err.name, message: err.message, stack: err.stack }
+      : { message: String(err) };
+    console.error('[BIMMA_API_ERROR]', {
+      method: request.method,
+      path,
+      ...diagnostic,
+    });
     return jsonResponse({ success: false, message: 'Terjadi kesalahan internal pada API.' }, 500);
   }
 }
