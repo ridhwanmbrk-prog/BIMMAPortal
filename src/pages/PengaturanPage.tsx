@@ -18,6 +18,8 @@ import {
   Eye,
   EyeOff,
   Check,
+  Database,
+  ArrowRightLeft,
 } from 'lucide-react';
 import {
   getConfig,
@@ -31,6 +33,7 @@ import {
 import { UserAccount } from '../types';
 import { GOOGLE_APPS_SCRIPT_CODE } from '../gasScript';
 import { initRekapFormulasInSheet } from '../sheetApi';
+import { d1MigrateRelationalCollections } from '../services/d1Storage';
 
 export const PengaturanPage: React.FC = () => {
   const config = getConfig();
@@ -75,6 +78,20 @@ export const PengaturanPage: React.FC = () => {
     message: '',
   });
   const [copiedCode, setCopiedCode] = useState(false);
+  const [relationalMigration, setRelationalMigration] = useState<{
+    status: 'idle' | 'loading' | 'success' | 'error'; message: string;
+  }>({ status: 'idle', message: '' });
+
+  const handleRelationalMigration = async () => {
+    if (currentUser?.role !== 'ADMIN') return;
+    const confirmed = window.confirm(
+      'Jalankan salinan awal data PESERTA, BATCH, dan IZIN ke tabel relasional D1? Koleksi JSON lama tidak akan dihapus.'
+    );
+    if (!confirmed) return;
+    setRelationalMigration({ status: 'loading', message: 'Memvalidasi data dan menyalin record ke tabel relasional…' });
+    const result = await d1MigrateRelationalCollections();
+    setRelationalMigration({ status: result.success ? 'success' : 'error', message: result.message });
+  };
 
   const loadAccounts = () => {
     setAccounts(getUserAccounts());
@@ -503,6 +520,46 @@ export const PengaturanPage: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Migrasi awal ke tabel relasional D1 — khusus Admin */}
+      {currentUser?.role === 'ADMIN' && (
+        <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/70 shadow-xs space-y-3">
+          <div className="flex items-center gap-2.5 pb-3 border-b border-slate-100">
+            <div className="w-8 h-8 rounded-xl bg-sky-100 text-sky-800 flex items-center justify-center shrink-0">
+              <Database className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-xs sm:text-sm font-black text-slate-800">Migrasi Awal Tabel Relasional D1</h2>
+              <p className="text-[10px] sm:text-[11px] text-slate-500">
+                Menyalin PESERTA, BATCH, dan IZIN ke tabel SQL sambil mempertahankan koleksi JSON lama.
+              </p>
+            </div>
+          </div>
+          <p className="text-[11px] leading-relaxed text-slate-600">
+            Jalankan satu kali setelah migrasi skema <code>0005_relational_payloads.sql</code> diterapkan di database D1. Proses ini mempertahankan ID dan payload asli, serta tidak menghapus data yang sudah ada.
+          </p>
+          <button
+            type="button"
+            onClick={handleRelationalMigration}
+            disabled={relationalMigration.status === 'loading'}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ArrowRightLeft className="w-4 h-4" />
+            {relationalMigration.status === 'loading' ? 'Sedang memigrasikan…' : 'Migrasikan PESERTA, BATCH, IZIN'}
+          </button>
+          {relationalMigration.message && (
+            <div className={`p-3 rounded-xl border text-xs leading-relaxed ${
+              relationalMigration.status === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : relationalMigration.status === 'error'
+                  ? 'bg-rose-50 border-rose-200 text-rose-700'
+                  : 'bg-slate-50 border-slate-200 text-slate-700'
+            }`} role="status">
+              {relationalMigration.message}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 3. KONFIGURASI GOOGLE APPS SCRIPT & FORMULA */}
       <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/70 shadow-xs space-y-4">
