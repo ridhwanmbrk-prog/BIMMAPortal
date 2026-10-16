@@ -215,6 +215,29 @@ export async function d1SaveCollection(
 }
 
 
+export async function d1MigrateRelationalCollections(): Promise<{
+  success: boolean;
+  alreadyMigrated?: boolean;
+  migrated?: { batches: number; participants: number; izin: number };
+  message: string;
+}> {
+  try {
+    const res = await d1Request('/admin/relational-migrate', { method: 'POST' });
+    const data = await readResponse(res);
+    if (!res.ok || data.success !== true) {
+      return { success: false, message: data.message || `Migrasi tabel relasional gagal (${res.status}).` };
+    }
+    return {
+      success: true,
+      alreadyMigrated: Boolean(data.alreadyMigrated),
+      migrated: data.migrated,
+      message: data.message || 'Migrasi tabel relasional selesai.',
+    };
+  } catch {
+    return { success: false, message: 'Tidak dapat menghubungi Worker untuk menjalankan migrasi relasional.' };
+  }
+}
+
 export async function d1ValidateSession(): Promise<{ success: boolean; message: string }> {
   try {
     if (!getToken()) return { success: false, message: 'Sesi D1 tidak ditemukan. Silakan login kembali.' };
