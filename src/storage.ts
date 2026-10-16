@@ -563,7 +563,8 @@ export function syncDatabaseState(referenceDate?: string): void {
         (iz) =>
           iz.pesertaId === p.pesertaId &&
           iz.statusPersetujuan === 'DISETUJUI' &&
-          iz.statusKedatangan !== 'SUDAH_KEMBALI'
+          iz.statusKedatangan !== 'SUDAH_KEMBALI' &&
+          iz.statusKedatangan !== 'TERLAMBAT'
       );
 
       if (activeIzin) {
@@ -771,7 +772,8 @@ export function verifyKedatanganSantri(
 
   const targetIzin = izinList.find((iz) => {
     if (iz.statusPersetujuan !== 'DISETUJUI') return false;
-    if (iz.statusKedatangan === 'SUDAH_KEMBALI') return false;
+    // Status TERLAMBAT juga berarti verifikasi kedatangan telah selesai.
+    if (iz.statusKedatangan === 'SUDAH_KEMBALI' || iz.statusKedatangan === 'TERLAMBAT') return false;
 
     if (iz.kodeVerifikasi && iz.kodeVerifikasi.toUpperCase() === clean) return true;
     if (iz.izinId.toUpperCase() === clean) return true;

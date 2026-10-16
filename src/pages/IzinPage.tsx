@@ -178,9 +178,9 @@ export const IzinPage: React.FC<IzinPageProps> = ({ onOpenScanner }) => {
 
     if (filterTab === 'MENUNGGU') return iz.statusPersetujuan === 'MENUNGGU';
     if (filterTab === 'SEDANG_IZIN')
-      return iz.statusPersetujuan === 'DISETUJUI' && iz.statusKedatangan !== 'SUDAH_KEMBALI';
+      return iz.statusPersetujuan === 'DISETUJUI' && iz.statusKedatangan !== 'SUDAH_KEMBALI' && iz.statusKedatangan !== 'TERLAMBAT';
     if (filterTab === 'KEMBALI')
-      return iz.statusPersetujuan === 'DISETUJUI' && iz.statusKedatangan === 'SUDAH_KEMBALI';
+      return iz.statusPersetujuan === 'DISETUJUI' && (iz.statusKedatangan === 'SUDAH_KEMBALI' || iz.statusKedatangan === 'TERLAMBAT');
 
     return true;
   });
@@ -245,7 +245,7 @@ export const IzinPage: React.FC<IzinPageProps> = ({ onOpenScanner }) => {
           >
             Sedang Izin ({
               izinList.filter(
-                (i) => i.statusPersetujuan === 'DISETUJUI' && i.statusKedatangan !== 'SUDAH_KEMBALI'
+                (i) => i.statusPersetujuan === 'DISETUJUI' && i.statusKedatangan !== 'SUDAH_KEMBALI' && i.statusKedatangan !== 'TERLAMBAT'
               ).length
             })
           </button>
@@ -259,7 +259,7 @@ export const IzinPage: React.FC<IzinPageProps> = ({ onOpenScanner }) => {
           >
             Kembali ({
               izinList.filter(
-                (i) => i.statusPersetujuan === 'DISETUJUI' && i.statusKedatangan === 'SUDAH_KEMBALI'
+                (i) => i.statusPersetujuan === 'DISETUJUI' && (i.statusKedatangan === 'SUDAH_KEMBALI' || i.statusKedatangan === 'TERLAMBAT')
               ).length
             })
           </button>
@@ -306,6 +306,7 @@ export const IzinPage: React.FC<IzinPageProps> = ({ onOpenScanner }) => {
                   const isOverdue =
                     iz.statusPersetujuan === 'DISETUJUI' &&
                     iz.statusKedatangan !== 'SUDAH_KEMBALI' &&
+                    iz.statusKedatangan !== 'TERLAMBAT' &&
                     now > deadline;
 
                   return (
@@ -364,10 +365,10 @@ export const IzinPage: React.FC<IzinPageProps> = ({ onOpenScanner }) => {
 
                           {iz.statusPersetujuan === 'DISETUJUI' && (
                             <div>
-                              {iz.statusKedatangan === 'SUDAH_KEMBALI' ? (
-                                <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[9px] font-black flex items-center gap-1 w-max">
+                              {iz.statusKedatangan === 'SUDAH_KEMBALI' || iz.statusKedatangan === 'TERLAMBAT' ? (
+                                <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black flex items-center gap-1 w-max ${iz.statusKedatangan === 'TERLAMBAT' ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
                                   <Check className="w-2.5 h-2.5" />
-                                  <span>TELAH KEMBALI</span>
+                                  <span>{iz.statusKedatangan === 'TERLAMBAT' ? 'TELAH KEMBALI TERLAMBAT' : 'TELAH KEMBALI'}</span>
                                 </span>
                               ) : isOverdue ? (
                                 <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[9px] font-black flex items-center gap-1 w-max animate-pulse">
@@ -428,7 +429,7 @@ export const IzinPage: React.FC<IzinPageProps> = ({ onOpenScanner }) => {
                               <span className="hidden sm:inline">Tolak</span>
                             </button>
                           </div>
-                        ) : iz.statusPersetujuan === 'DISETUJUI' && iz.statusKedatangan !== 'SUDAH_KEMBALI' ? (
+                        ) : iz.statusPersetujuan === 'DISETUJUI' && iz.statusKedatangan !== 'SUDAH_KEMBALI' && iz.statusKedatangan !== 'TERLAMBAT' ? (
                           <button
                             onClick={() => handleOpenVerifikasiModal(iz)}
                             className="px-2.5 sm:px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-[11px] font-bold transition cursor-pointer shadow-xs flex items-center gap-1"

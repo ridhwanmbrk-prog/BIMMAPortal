@@ -368,7 +368,6 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
         return;
       }
 
-      c
       // QR baru: pesertaId-nim. Validasi keduanya sebelum mencatat presensi.
       let nimUntukAbsensi = cleanText;
       const pemisahTerakhir = cleanText.lastIndexOf('-');

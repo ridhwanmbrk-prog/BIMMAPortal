@@ -236,9 +236,9 @@ export async function generateSuratIzinPdf(izin: Izin, santri: Peserta, petugasN
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
-  if (izin.statusKedatangan === 'SUDAH_KEMBALI') {
-    doc.setTextColor(4, 120, 87);
-    doc.text(`[✓] TELAH KEMBALI KE ASRAMA`, 24, ttdY + 12);
+  if (izin.statusKedatangan === 'SUDAH_KEMBALI' || izin.statusKedatangan === 'TERLAMBAT') {
+    doc.setTextColor(izin.statusKedatangan === 'TERLAMBAT' ? 180 : 4, izin.statusKedatangan === 'TERLAMBAT' ? 83 : 120, izin.statusKedatangan === 'TERLAMBAT' ? 9 : 87);
+    doc.text(izin.statusKedatangan === 'TERLAMBAT' ? `[✓] TELAH KEMBALI KE ASRAMA (TERLAMBAT)` : `[✓] TELAH KEMBALI KE ASRAMA`, 24, ttdY + 12);
     doc.text(`Waktu Kedatangan: ${izin.waktuKedatanganKembali?.replace('T', ' ') || '-'} WIB`, 24, ttdY + 17);
     doc.text(`Petugas Verifikator: ${izin.petugasVerifikasi || '-'}`, 24, ttdY + 22);
   } else {

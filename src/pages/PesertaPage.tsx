@@ -177,7 +177,7 @@ export const PesertaPage: React.FC = () => {
 
       // Auto-generate QR code data URL untuk kartu santri
       try {
-        await QRCode.toDataURL(cleanNim, { width: 200, margin: 1 });
+        await QRCode.toDataURL(`${newP.pesertaId}-${newP.nim}`, { width: 200, margin: 1 });
       } catch (err) {
         console.warn('QR auto-generation ready in memory:', err);
       }

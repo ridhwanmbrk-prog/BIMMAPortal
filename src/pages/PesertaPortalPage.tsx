@@ -86,7 +86,8 @@ export const PesertaPortalPage: React.FC = () => {
       setAlamat(target.alamat || '');
 
       // Generate QR Code untuk Kartu Santri
-      QRCode.toDataURL(target.nim, {
+      // Format QR seragam dengan kartu cetak: ID peserta-NIM.
+      QRCode.toDataURL(`${target.pesertaId}-${target.nim}`, {
         margin: 1,
         width: 320,
         color: { dark: '#064e3b', light: '#ffffff' },
@@ -139,6 +140,9 @@ export const PesertaPortalPage: React.FC = () => {
 
     const isIzinActive = myIzinList.some((iz) => {
       if (iz.statusPersetujuan !== 'DISETUJUI') return false;
+      // Izin yang sudah diverifikasi kembali (tepat waktu maupun terlambat)
+      // tidak lagi membebaskan peserta dari presensi kegiatan berikutnya.
+      if (iz.statusKedatangan === 'SUDAH_KEMBALI' || iz.statusKedatangan === 'TERLAMBAT') return false;
       const t1 = iz.waktuMulai.split('T')[0];
       const t2 = iz.waktuSelesai.split('T')[0];
       return todayStr >= t1 && todayStr <= t2;
@@ -328,7 +332,8 @@ export const PesertaPortalPage: React.FC = () => {
     (iz) =>
       iz.pesertaId === peserta.pesertaId &&
       iz.statusPersetujuan === 'DISETUJUI' &&
-      iz.statusKedatangan !== 'SUDAH_KEMBALI'
+      iz.statusKedatangan !== 'SUDAH_KEMBALI' &&
+      iz.statusKedatangan !== 'TERLAMBAT'
   );
 
   return (
@@ -822,7 +827,7 @@ export const PesertaPortalPage: React.FC = () => {
             <h4 className="font-extrabold text-xs text-slate-700">Status Permohonan Izin & Surat Resmi Bukti Kedatangan:</h4>
             {myIzinList.map((iz) => {
               const deadline = new Date(iz.waktuSelesai);
-              const isOverdue = iz.statusPersetujuan === 'DISETUJUI' && iz.statusKedatangan !== 'SUDAH_KEMBALI' && new Date() > deadline;
+              const isOverdue = iz.statusPersetujuan === 'DISETUJUI' && iz.statusKedatangan !== 'SUDAH_KEMBALI' && iz.statusKedatangan !== 'TERLAMBAT' && new Date() > deadline;
 
               return (
                 <div
@@ -867,10 +872,10 @@ export const PesertaPortalPage: React.FC = () => {
 
                       {iz.statusPersetujuan === 'DISETUJUI' && (
                         <div>
-                          {iz.statusKedatangan === 'SUDAH_KEMBALI' ? (
-                            <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[9px] font-black flex items-center gap-1">
+                          {iz.statusKedatangan === 'SUDAH_KEMBALI' || iz.statusKedatangan === 'TERLAMBAT' ? (
+                            <span className={`px-2 py-0.5 rounded-full text-white text-[9px] font-black flex items-center gap-1 ${iz.statusKedatangan === 'TERLAMBAT' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
                               <Check className="w-2.5 h-2.5" />
-                              <span>TELAH KEMBALI</span>
+                              <span>{iz.statusKedatangan === 'TERLAMBAT' ? 'TELAH KEMBALI TERLAMBAT' : 'TELAH KEMBALI'}</span>
                             </span>
                           ) : isOverdue ? (
                             <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[9px] font-black animate-pulse">
