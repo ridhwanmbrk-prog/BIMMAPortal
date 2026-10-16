@@ -58,8 +58,9 @@ async function d1Request(
     if (token) headers.set('Authorization', `Bearer ${token}`);
   }
 
-  // Do not automatically retry HTTP 429/5xx responses. Repeated retries amplified
-  // Worker invocations during incidents and can worsen account-level request limits.
+  // One browser action produces at most one Worker invocation. In particular,
+  // never automatically retry HTTP 429: retries multiplied account-level
+  // request usage and contributed to Error 1027 during the migration.
   return fetch(`${D1_CONFIG.apiPrefix}${path}`, {
     ...init,
     headers,

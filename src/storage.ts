@@ -169,8 +169,13 @@ async function flushD1Writes(): Promise<void> {
         console.error(`[D1] ${message}`);
         notifyD1WriteError(message);
         consecutiveD1Failures += 1;
-        if (typeof window !== 'undefined' && pendingD1RetryTimer === null) {
-          const retryDelay = Math.min(5000 * (2 ** Math.min(consecutiveD1Failures - 1, 4)), 60000);
+        // Do not retry rate limiting/auth/schema/client errors automatically.
+        // Retrying those errors creates more Workers invocations without fixing
+        // the cause. Transient server/network failures get at most two retries.
+        const permanentOrRateLimited = /\((?:400|401|403|404|409|413|429)\)/.test(result.message);
+        const retryAllowed = !permanentOrRateLimited && consecutiveD1Failures < 3;
+        if (retryAllowed && typeof window !== 'undefined' && pendingD1RetryTimer === null) {
+          const retryDelay = consecutiveD1Failures === 1 ? 15000 : 45000;
           pendingD1RetryTimer = window.setTimeout(() => {
             pendingD1RetryTimer = null;
             void flushD1Writes();
@@ -188,6 +193,12 @@ async function flushD1Writes(): Promise<void> {
 
 function queueD1Write(collection: D1CollectionKey, value: unknown): void {
   pendingD1Writes.set(collection, value);
+  // A new user change is a new explicit attempt; clear any stale retry timer.
+  consecutiveD1Failures = 0;
+  if (pendingD1RetryTimer !== null && typeof window !== 'undefined') {
+    window.clearTimeout(pendingD1RetryTimer);
+    pendingD1RetryTimer = null;
+  }
   void flushD1Writes();
 }
 
