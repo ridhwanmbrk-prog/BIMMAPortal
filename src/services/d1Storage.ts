@@ -55,29 +55,16 @@ async function d1Request(
 
   if (authenticated) {
     const token = getToken();
-    if (token) {
-      headers.set('Authorization', `Bearer ${token}`);
-    }
+    if (token) headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const method = String(init.method || 'GET').toUpperCase();
-  const retryable = method === 'GET' || method === 'PUT';
-  let response: Response | null = null;
-  for (let attempt = 0; attempt < (retryable ? 5 : 1); attempt++) {
-    response = await fetch(`${D1_CONFIG.apiPrefix}${path}`, {
-      ...init,
-      headers,
-      cache: 'no-store',
-    });
-    if (response.status !== 429 && response.status < 500) return response;
-    if (!retryable || attempt === 4) return response;
-    const retryAfter = Number(response.headers.get('Retry-After'));
-    const delayMs = Number.isFinite(retryAfter) && retryAfter > 0
-      ? Math.min(retryAfter * 1000, 8000)
-      : Math.min(600 * (2 ** attempt), 8000);
-    await new Promise(resolve => setTimeout(resolve, delayMs));
-  }
-  return response as Response;
+  // Do not automatically retry HTTP 429/5xx responses. Repeated retries amplified
+  // Worker invocations during incidents and can worsen account-level request limits.
+  return fetch(`${D1_CONFIG.apiPrefix}${path}`, {
+    ...init,
+    headers,
+    cache: 'no-store',
+  });
 }
 
 async function readResponse(res: Response): Promise<any> {
