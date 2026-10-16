@@ -284,6 +284,334 @@ async function createSession(env: Env, user: any, pesertaId?: string | null): Pr
   return token;
 }
 
+type JsonRow = Record<string, any>;
+
+const RELATIONAL_MIGRATION_ID = 'relational_seed_v1';
+
+function pickText(row: JsonRow, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return String(value).trim();
+    }
+  }
+  return '';
+}
+
+function nullableText(row: JsonRow, ...keys: string[]): string | null {
+  const value = pickText(row, ...keys);
+  return value ? value : null;
+}
+
+function dateOnly(value: string): string {
+  const match = String(value || '').trim().match(/^(\d{4}-\d{2}-\d{2})/);
+  return match?.[1] || '';
+}
+
+function assertUniqueValues<T>(rows: T[], keyOf: (row: T) => string, label: string): void {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const key = keyOf(row);
+    if (seen.has(key)) throw new Error(`Koleksi ${label} memiliki ID/NIM duplikat: ${key}.`);
+    seen.add(key);
+  }
+}
+
+function parseCollectionArray(raw: unknown, key: string): JsonRow[] {
+  if (raw === null || raw === undefined || raw === '') return [];
+  let value: unknown = raw;
+  if (typeof raw === 'string') {
+    try { value = JSON.parse(raw); }
+    catch { throw new Error(`Koleksi ${key} berisi JSON yang tidak valid.`); }
+  }
+  if (!Array.isArray(value)) throw new Error(`Koleksi ${key} bukan array.`);
+  if (value.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
+    throw new Error(`Koleksi ${key} memiliki record dengan format tidak valid.`);
+  }
+  return value as JsonRow[];
+}
+
+async function readStoredCollection(env: Env, key: string): Promise<JsonRow[]> {
+  const stored = await env.DB.prepare(
+    'SELECT value_json FROM app_collections WHERE collection_key = ?'
+  ).bind(key).first<any>();
+  if (!stored) return [];
+  return parseCollectionArray(String(stored.value_json ?? '[]'), key);
+}
+
+async function runInChunks(env: Env, statements: D1PreparedStatement[], chunkSize = 80): Promise<void> {
+  for (let offset = 0; offset < statements.length; offset += chunkSize) {
+    await env.DB.batch(statements.slice(offset, offset + chunkSize));
+  }
+}
+
+function normalizeBatchRow(row: JsonRow): {
+  id: string; nama: string; start: string; end: string; status: string;
+  tahun: string | null; keterangan: string | null; dataJson: string;
+  createdAt: string | null; updatedAt: string | null;
+} {
+  const id = pickText(row, 'batchId', 'batch_id', 'id');
+  const nama = pickText(row, 'namaBatch', 'nama_batch', 'nama');
+  const start = dateOnly(pickText(row, 'tanggalMulai', 'tanggal_mulai'));
+  const end = dateOnly(pickText(row, 'tanggalSelesai', 'tanggal_selesai'));
+  if (!id || !nama || !start || !end) {
+    throw new Error('Koleksi BATCH belum dapat dimigrasikan: setiap batch harus memiliki ID, nama, tanggal mulai, dan tanggal selesai.');
+  }
+  return {
+    id, nama, start, end,
+    status: pickText(row, 'statusBatch', 'status_batch', 'status') || 'AKTIF',
+    tahun: nullableText(row, 'tahun'),
+    keterangan: nullableText(row, 'keterangan'),
+    dataJson: JSON.stringify(row),
+    createdAt: nullableText(row, 'createdAt', 'created_at'),
+    updatedAt: nullableText(row, 'updatedAt', 'updated_at'),
+  };
+}
+
+function normalizeParticipantRow(row: JsonRow): {
+  id: string; nim: string; nama: string; jurusan: string | null; gender: string | null;
+  whatsapp: string | null; email: string | null; alamat: string | null; tanggalMasuk: string | null;
+  status: string; batchId: string; dataJson: string; createdAt: string | null; updatedAt: string | null;
+} {
+  const id = pickText(row, 'pesertaId', 'peserta_id', 'id');
+  const nim = pickText(row, 'nim');
+  const nama = pickText(row, 'namaLengkap', 'nama_lengkap', 'nama');
+  if (!id || !nim || !nama) {
+    throw new Error('Koleksi PESERTA belum dapat dimigrasikan: setiap peserta harus memiliki ID, NIM, dan nama.');
+  }
+  return {
+    id, nim, nama,
+    jurusan: nullableText(row, 'programStudi', 'program_studi', 'jurusan'),
+    gender: nullableText(row, 'gender'),
+    whatsapp: nullableText(row, 'nomorWhatsApp', 'nomor_whatsapp'),
+    email: nullableText(row, 'email'),
+    alamat: nullableText(row, 'alamat'),
+    tanggalMasuk: nullableText(row, 'tanggalMasuk', 'tanggal_masuk'),
+    status: pickText(row, 'statusPeserta', 'status_peserta', 'status') || 'AKTIF',
+    batchId: pickText(row, 'batchId', 'batch_id'),
+    dataJson: JSON.stringify(row),
+    createdAt: nullableText(row, 'createdAt', 'created_at'),
+    updatedAt: nullableText(row, 'updatedAt', 'updated_at'),
+  };
+}
+
+function normalizeIzinRow(row: JsonRow): {
+  id: string; pesertaId: string; startDate: string; endDate: string; alasan: string | null;
+  status: string; jenis: string | null; startTime: string | null; endTime: string | null;
+  diajukanOleh: string | null; waktuPengajuan: string | null; diputuskanOleh: string | null;
+  waktuKeputusan: string | null; catatanAdmin: string | null; buktiFileId: string | null;
+  nomorSurat: string | null; kodeVerifikasi: string | null; statusKedatangan: string | null;
+  waktuKedatangan: string | null; petugasVerifikasi: string | null; catatanKedatangan: string | null;
+  alasanTerlambat: string | null; dataJson: string; createdAt: string | null; updatedAt: string | null;
+} {
+  const id = pickText(row, 'izinId', 'izin_id', 'id');
+  const pesertaId = pickText(row, 'pesertaId', 'peserta_id');
+  const startTime = pickText(row, 'waktuMulai', 'waktu_mulai', 'tanggalMulai', 'tanggal_mulai', 'tanggal');
+  const endTime = pickText(row, 'waktuSelesai', 'waktu_selesai', 'tanggalSelesai', 'tanggal_selesai') || startTime;
+  const startDate = dateOnly(startTime);
+  const endDate = dateOnly(endTime);
+  if (!id || !pesertaId || !startDate || !endDate) {
+    throw new Error('Koleksi IZIN belum dapat dimigrasikan: setiap izin harus memiliki ID, peserta, dan waktu/tanggal mulai serta selesai yang valid. Data JSON lama tetap dipertahankan.');
+  }
+  return {
+    id, pesertaId, startDate, endDate,
+    alasan: nullableText(row, 'alasan'),
+    status: pickText(row, 'statusPersetujuan', 'status_persetujuan', 'status') || 'MENUNGGU',
+    jenis: nullableText(row, 'jenisIzin', 'jenis_izin'),
+    startTime: startTime || null,
+    endTime: endTime || null,
+    diajukanOleh: nullableText(row, 'diajukanOleh', 'diajukan_oleh'),
+    waktuPengajuan: nullableText(row, 'waktuPengajuan', 'waktu_pengajuan'),
+    diputuskanOleh: nullableText(row, 'diputuskanOleh', 'diputuskan_oleh'),
+    waktuKeputusan: nullableText(row, 'waktuKeputusan', 'waktu_keputusan'),
+    catatanAdmin: nullableText(row, 'catatanAdmin', 'catatan_admin'),
+    buktiFileId: nullableText(row, 'buktiFileId', 'bukti_file_id'),
+    nomorSurat: nullableText(row, 'nomorSurat', 'nomor_surat'),
+    kodeVerifikasi: nullableText(row, 'kodeVerifikasi', 'kode_verifikasi'),
+    statusKedatangan: nullableText(row, 'statusKedatangan', 'status_kedatangan'),
+    waktuKedatangan: nullableText(row, 'waktuKedatanganKembali', 'waktu_kedatangan_kembali'),
+    petugasVerifikasi: nullableText(row, 'petugasVerifikasi', 'petugas_verifikasi'),
+    catatanKedatangan: nullableText(row, 'catatanKedatangan', 'catatan_kedatangan'),
+    alasanTerlambat: nullableText(row, 'alasanTerlambat', 'alasan_terlambat'),
+    dataJson: JSON.stringify(row),
+    createdAt: nullableText(row, 'waktuPengajuan', 'createdAt', 'created_at'),
+    updatedAt: nullableText(row, 'waktuKeputusan', 'updatedAt', 'updated_at', 'waktuPengajuan', 'createdAt'),
+  };
+}
+
+async function upsertBatches(env: Env, rows: JsonRow[]): Promise<void> {
+  const normalized = rows.map(normalizeBatchRow);
+  const statements = normalized.map(row => env.DB.prepare(`
+    INSERT INTO batch (id, nama, tanggal_mulai, tanggal_selesai, status, tahun, keterangan, data_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')))
+    ON CONFLICT(id) DO UPDATE SET
+      nama = excluded.nama, tanggal_mulai = excluded.tanggal_mulai,
+      tanggal_selesai = excluded.tanggal_selesai, status = excluded.status,
+      tahun = excluded.tahun, keterangan = excluded.keterangan,
+      data_json = excluded.data_json, updated_at = datetime('now')
+  `).bind(row.id, row.nama, row.start, row.end, row.status, row.tahun, row.keterangan,
+    row.dataJson, row.createdAt, row.updatedAt));
+  await runInChunks(env, statements);
+}
+
+async function upsertParticipants(env: Env, rows: JsonRow[]): Promise<ReturnType<typeof normalizeParticipantRow>[]> {
+  const normalized = rows.map(normalizeParticipantRow);
+  const statements = normalized.map(row => env.DB.prepare(`
+    INSERT INTO peserta (id, nim, nama, jurusan, gender, nomor_whatsapp, email, alamat, tanggal_masuk, status, data_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')))
+    ON CONFLICT(id) DO UPDATE SET
+      nim = excluded.nim, nama = excluded.nama, jurusan = excluded.jurusan,
+      gender = excluded.gender, nomor_whatsapp = excluded.nomor_whatsapp,
+      email = excluded.email, alamat = excluded.alamat, tanggal_masuk = excluded.tanggal_masuk,
+      status = excluded.status, data_json = excluded.data_json, updated_at = datetime('now')
+  `).bind(row.id, row.nim, row.nama, row.jurusan, row.gender, row.whatsapp, row.email,
+    row.alamat, row.tanggalMasuk, row.status, row.dataJson, row.createdAt, row.updatedAt));
+  await runInChunks(env, statements);
+  return normalized;
+}
+
+async function validateParticipantBatchReferences(
+  env: Env,
+  rows: ReturnType<typeof normalizeParticipantRow>[],
+  additionalBatchIds: string[] = [],
+): Promise<void> {
+  const batchResult = await env.DB.prepare('SELECT id FROM batch').all<any>();
+  const batchIds = new Set((batchResult.results || []).map(row => String(row.id)));
+  additionalBatchIds.forEach(id => batchIds.add(id));
+  const missingBatch = rows.find(row => row.batchId && !batchIds.has(row.batchId));
+  if (missingBatch) {
+    throw new Error(`Koleksi PESERTA merujuk ke batch \"${missingBatch.batchId}\" yang belum ada di tabel batch. Simpan batch terlebih dahulu.`);
+  }
+}
+
+async function syncBatchParticipantLinks(env: Env, rows: JsonRow[]): Promise<void> {
+  const normalized = rows.map(normalizeParticipantRow);
+  await validateParticipantBatchReferences(env, normalized);
+
+  const statements: D1PreparedStatement[] = [];
+  for (const row of normalized) {
+    // Replace only this participant's current batch link. Keep the participant
+    // record itself intact because historical izin/attendance rows may reference it.
+    if (row.batchId) {
+      statements.push(env.DB.prepare(
+        'DELETE FROM batch_peserta WHERE peserta_id = ? AND batch_id <> ?'
+      ).bind(row.id, row.batchId));
+      statements.push(env.DB.prepare(
+        'INSERT OR IGNORE INTO batch_peserta (batch_id, peserta_id) VALUES (?, ?)'
+      ).bind(row.batchId, row.id));
+    } else {
+      statements.push(env.DB.prepare('DELETE FROM batch_peserta WHERE peserta_id = ?').bind(row.id));
+    }
+  }
+  await runInChunks(env, statements);
+}
+
+async function upsertIzin(env: Env, rows: JsonRow[]): Promise<void> {
+  const normalized = rows.map(normalizeIzinRow);
+  assertUniqueValues(normalized, row => row.id, 'IZIN');
+  const participantResult = await env.DB.prepare('SELECT id FROM peserta').all<any>();
+  const participantIds = new Set((participantResult.results || []).map(row => String(row.id)));
+  const unknownParticipant = normalized.find(row => !participantIds.has(row.pesertaId));
+  if (unknownParticipant) {
+    throw new Error(`Koleksi IZIN merujuk ke peserta \"${unknownParticipant.pesertaId}\" yang tidak ada di tabel peserta.`);
+  }
+  const statements = normalized.map(row => env.DB.prepare(`
+    INSERT INTO izin (
+      id, peserta_id, tanggal_mulai, tanggal_selesai, alasan, status, jenis_izin,
+      waktu_mulai, waktu_selesai, diajukan_oleh, waktu_pengajuan, diputuskan_oleh,
+      waktu_keputusan, catatan_admin, bukti_file_id, nomor_surat, kode_verifikasi,
+      status_kedatangan, waktu_kedatangan_kembali, petugas_verifikasi,
+      catatan_kedatangan, alasan_terlambat, data_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      COALESCE(?, datetime('now')), COALESCE(?, datetime('now')))
+    ON CONFLICT(id) DO UPDATE SET
+      peserta_id = excluded.peserta_id, tanggal_mulai = excluded.tanggal_mulai,
+      tanggal_selesai = excluded.tanggal_selesai, alasan = excluded.alasan,
+      status = excluded.status, jenis_izin = excluded.jenis_izin,
+      waktu_mulai = excluded.waktu_mulai, waktu_selesai = excluded.waktu_selesai,
+      diajukan_oleh = excluded.diajukan_oleh, waktu_pengajuan = excluded.waktu_pengajuan,
+      diputuskan_oleh = excluded.diputuskan_oleh, waktu_keputusan = excluded.waktu_keputusan,
+      catatan_admin = excluded.catatan_admin, bukti_file_id = excluded.bukti_file_id,
+      nomor_surat = excluded.nomor_surat, kode_verifikasi = excluded.kode_verifikasi,
+      status_kedatangan = excluded.status_kedatangan,
+      waktu_kedatangan_kembali = excluded.waktu_kedatangan_kembali,
+      petugas_verifikasi = excluded.petugas_verifikasi,
+      catatan_kedatangan = excluded.catatan_kedatangan,
+      alasan_terlambat = excluded.alasan_terlambat,
+      data_json = excluded.data_json, updated_at = datetime('now')
+  `).bind(
+    row.id, row.pesertaId, row.startDate, row.endDate, row.alasan, row.status,
+    row.jenis, row.startTime, row.endTime, row.diajukanOleh, row.waktuPengajuan,
+    row.diputuskanOleh, row.waktuKeputusan, row.catatanAdmin, row.buktiFileId,
+    row.nomorSurat, row.kodeVerifikasi, row.statusKedatangan, row.waktuKedatangan,
+    row.petugasVerifikasi, row.catatanKedatangan, row.alasanTerlambat,
+    row.dataJson, row.createdAt, row.updatedAt));
+  await runInChunks(env, statements);
+}
+
+async function isRelationalSeedComplete(env: Env): Promise<boolean> {
+  const row = await env.DB.prepare('SELECT id FROM app_config WHERE id = ?')
+    .bind(RELATIONAL_MIGRATION_ID).first<any>();
+  return !!row;
+}
+
+/**
+ * One-time, idempotent seed from the existing JSON collections into their
+ * structured D1 tables. The legacy collections are intentionally not deleted;
+ * this keeps the current UI working while relational parity is verified.
+ */
+async function seedRelationalTablesFromCollections(env: Env): Promise<{ batches: number; participants: number; izin: number }> {
+  if (await isRelationalSeedComplete(env)) return { batches: 0, participants: 0, izin: 0 };
+
+  const [batchRows, participantRows, izinRows] = await Promise.all([
+    readStoredCollection(env, 'BATCH'),
+    readStoredCollection(env, 'PESERTA'),
+    readStoredCollection(env, 'IZIN'),
+  ]);
+
+  // Validate all source collections before any writes so malformed, duplicate,
+  // or orphaned records fail early instead of leaving a partial seed behind.
+  const normalizedBatches = batchRows.map(normalizeBatchRow);
+  const normalizedParticipants = participantRows.map(normalizeParticipantRow);
+  const normalizedIzin = izinRows.map(normalizeIzinRow);
+  assertUniqueValues(normalizedBatches, row => row.id, 'BATCH');
+  assertUniqueValues(normalizedParticipants, row => row.id, 'PESERTA');
+  assertUniqueValues(normalizedParticipants, row => row.nim, 'PESERTA (NIM)');
+  assertUniqueValues(normalizedIzin, row => row.id, 'IZIN');
+
+  const batchIds = new Set(normalizedBatches.map(row => row.id));
+  const participantWithMissingBatch = normalizedParticipants.find(row => row.batchId && !batchIds.has(row.batchId));
+  if (participantWithMissingBatch) {
+    throw new Error(`Koleksi PESERTA merujuk ke batch \"${participantWithMissingBatch.batchId}\" yang tidak ditemukan pada koleksi BATCH.`);
+  }
+  const participantIds = new Set(normalizedParticipants.map(row => row.id));
+  const izinWithMissingParticipant = normalizedIzin.find(row => !participantIds.has(row.pesertaId));
+  if (izinWithMissingParticipant) {
+    throw new Error(`Koleksi IZIN merujuk ke peserta \"${izinWithMissingParticipant.pesertaId}\" yang tidak ditemukan pada koleksi PESERTA.`);
+  }
+
+  await upsertBatches(env, batchRows);
+  await upsertParticipants(env, participantRows);
+  await syncBatchParticipantLinks(env, participantRows);
+  await upsertIzin(env, izinRows);
+
+  const report = JSON.stringify({
+    version: 1,
+    completedAt: new Date().toISOString(),
+    batches: batchRows.length,
+    participants: participantRows.length,
+    izin: izinRows.length,
+    source: 'app_collections',
+  });
+  await env.DB.prepare(`
+    INSERT INTO app_config (id, value_json, updated_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')
+  `).bind(RELATIONAL_MIGRATION_ID, report).run();
+
+  return { batches: batchRows.length, participants: participantRows.length, izin: izinRows.length };
+}
+
 async function handleApiRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api/, '');
@@ -392,8 +720,8 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       const jsonValue = JSON.stringify(participants);
       if (jsonValue.length > 2_000_000) return jsonResponse({ success: false, message: 'Data peserta melebihi batas ukuran.' }, 413);
       await env.DB.batch([
-        env.DB.prepare(`UPDATE peserta SET email = ?, nomor_whatsapp = ?, alamat = ?, updated_at = datetime('now') WHERE id = ? AND nim = ?`)
-          .bind(email, nomorWhatsApp, alamat, participantId, nim),
+        env.DB.prepare(`UPDATE peserta SET email = ?, nomor_whatsapp = ?, alamat = ?, data_json = ?, updated_at = datetime('now') WHERE id = ? AND nim = ?`)
+          .bind(email, nomorWhatsApp, alamat, JSON.stringify(participants[index]), participantId, nim),
         env.DB.prepare(`INSERT INTO app_collections (collection_key, value_json, updated_at) VALUES ('PESERTA', ?, datetime('now')) ON CONFLICT(collection_key) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')`)
           .bind(jsonValue),
       ]);
@@ -685,6 +1013,36 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ success: true, message: 'Akun dihapus.' });
     }
 
+    // Explicit one-time seed. It is admin-only and never deletes app_collections.
+    if ((path === '/admin/relational-migrate' || path === '/d1/admin/relational-migrate') && request.method === 'POST') {
+      const session = await requireSession(request, env);
+      if (!requireRole(session, ['ADMIN'])) {
+        return jsonResponse({ success: false, message: 'Hanya Admin yang boleh menjalankan migrasi tabel relasional.' }, session ? 403 : 401);
+      }
+      try {
+        if (await isRelationalSeedComplete(env)) {
+          return jsonResponse({ success: true, alreadyMigrated: true, message: 'Migrasi awal tabel relasional sudah pernah selesai.' });
+        }
+        const migrated = await seedRelationalTablesFromCollections(env);
+        return jsonResponse({
+          success: true,
+          alreadyMigrated: false,
+          migrated,
+          message: `Migrasi selesai. ${migrated.participants} peserta, ${migrated.batches} batch, dan ${migrated.izin} data izin disalin ke tabel relasional. Koleksi JSON lama tetap dipertahankan.`,
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[BIMMA_RELATIONAL_MIGRATION]', { message });
+        const isValidation = message.startsWith('Koleksi ') || message.startsWith('Koleksi IZIN');
+        return jsonResponse({
+          success: false,
+          message: isValidation
+            ? message
+            : 'Migrasi belum selesai. Pastikan migrations/0005_relational_payloads.sql sudah diterapkan pada D1, lalu coba kembali. Koleksi JSON lama tidak dihapus.',
+        }, isValidation ? 409 : 503);
+      }
+    }
+
     // D1 is the canonical application store. Browser localStorage is only a hydrated cache.
     const collectionKeys = new Set([
       'CONFIG', 'PESERTA', 'BATCH', 'JADWAL', 'ABSENSI', 'IZIN',
@@ -736,29 +1094,37 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       const jsonValue = JSON.stringify(body.items);
       if (jsonValue.length > 2_000_000) return jsonResponse({ success: false, message: 'Ukuran data melebihi batas 2 MB.' }, 413);
 
-      // Keep the relational peserta table in sync because QR login validates against it.
+      // Dual-write the collections that have a verified relational mapping.
+      // app_collections stays intact as the compatibility source until every module
+      // (especially recurring jadwal/absensi) has a verified normalized schema.
       if (key === 'PESERTA' && Array.isArray(body.items)) {
-        const rows = body.items.filter((p: any) => p && (p.pesertaId || p.peserta_id || p.id) && p.nim && (p.namaLengkap || p.nama_lengkap || p.nama));
-        for (let offset = 0; offset < rows.length; offset += 80) {
-          const statements: D1PreparedStatement[] = rows.slice(offset, offset + 80).map((p: any) => env.DB.prepare(`
-            INSERT INTO peserta (id, nim, nama, jurusan, gender, nomor_whatsapp, email, alamat, tanggal_masuk, status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(id) DO UPDATE SET
-              nim = excluded.nim, nama = excluded.nama, jurusan = excluded.jurusan,
-              gender = excluded.gender, nomor_whatsapp = excluded.nomor_whatsapp,
-              email = excluded.email, alamat = excluded.alamat,
-              tanggal_masuk = excluded.tanggal_masuk, status = excluded.status,
-              updated_at = datetime('now')
-          `).bind(
-            String(p.pesertaId || p.peserta_id || p.id), String(p.nim),
-            String(p.namaLengkap || p.nama_lengkap || p.nama),
-            String(p.programStudi || p.program_studi || p.jurusan || ''),
-            String(p.gender || ''), String(p.nomorWhatsApp || p.nomor_whatsapp || ''),
-            String(p.email || ''), String(p.alamat || ''), String(p.tanggalMasuk || p.tanggal_masuk || ''),
-            String(p.statusPeserta || p.status_peserta || p.status || 'AKTIF')
-          ));
-          await env.DB.batch(statements);
-        }
+        // Reject malformed rows instead of silently keeping JSON and SQL out of sync.
+        const rows = body.items as JsonRow[];
+        const normalized = rows.map(normalizeParticipantRow);
+        assertUniqueValues(normalized, row => row.id, 'PESERTA');
+        assertUniqueValues(normalized, row => row.nim, 'PESERTA (NIM)');
+        await validateParticipantBatchReferences(env, normalized);
+        await upsertParticipants(env, rows);
+        await syncBatchParticipantLinks(env, rows);
+      }
+
+      if (key === 'BATCH' && Array.isArray(body.items)) {
+        const normalized = (body.items as JsonRow[]).map(normalizeBatchRow);
+        assertUniqueValues(normalized, row => row.id, 'BATCH');
+        // Validate the participant references before writing batches, using both
+        // already-persisted IDs and IDs being introduced in this request.
+        const participantRows = await readStoredCollection(env, 'PESERTA');
+        await validateParticipantBatchReferences(
+          env,
+          participantRows.map(normalizeParticipantRow),
+          normalized.map(row => row.id),
+        );
+        await upsertBatches(env, body.items);
+        await syncBatchParticipantLinks(env, participantRows);
+      }
+
+      if (key === 'IZIN' && Array.isArray(body.items)) {
+        await upsertIzin(env, body.items);
       }
 
       await env.DB.prepare(`
