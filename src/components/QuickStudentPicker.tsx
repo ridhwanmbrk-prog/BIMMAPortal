@@ -105,9 +105,36 @@ export const QuickStudentPicker: React.FC<QuickStudentPickerProps> = ({
 
   const matchAndSelect = (nimOrId: string) => {
     const clean = nimOrId.trim();
-    const found = pesertaList.find(
-      (p) => p.nim === clean || p.pesertaId === clean || p.namaLengkap.toLowerCase() === clean.toLowerCase()
-    );
+    const normalize = (value: string | undefined | null) =>
+      String(value ?? '').trim().toUpperCase();
+
+    let found: Peserta | undefined;
+
+    // QR kartu santri: pesertaId-nim, misalnya B003-231234050.
+    // Pisahkan dari tanda hubung terakhir agar pesertaId boleh mengandung "-".
+    const separator = clean.lastIndexOf('-');
+
+    if (separator > 0) {
+      const qrPesertaId = clean.slice(0, separator).trim();
+      const qrNim = clean.slice(separator + 1).trim();
+
+      found = pesertaList.find(
+        (p) =>
+          normalize(p.pesertaId) === normalize(qrPesertaId) &&
+          normalize(p.nim) === normalize(qrNim)
+      );
+    }
+
+    // Tetap mendukung QR lama yang berisi NIM saja atau pesertaId saja.
+    if (!found) {
+      found = pesertaList.find(
+        (p) =>
+          normalize(p.nim) === normalize(clean) ||
+          normalize(p.pesertaId) === normalize(clean) ||
+          normalize(p.namaLengkap) === normalize(clean)
+      );
+    }
+
     if (found) {
       onSelectPeserta(found);
       setQuery('');
