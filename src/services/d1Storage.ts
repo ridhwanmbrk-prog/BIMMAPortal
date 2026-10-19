@@ -548,6 +548,31 @@ export async function d1LoginStaff(
   }
 }
 
+export async function resetD1OperationalData(): Promise<{
+  success: boolean;
+  databaseReset: boolean;
+  message: string;
+}> {
+  try {
+    const response = await d1Request('/admin/reset-operational-data', {
+      method: 'POST',
+      body: JSON.stringify({ confirmation: 'HAPUS DATA BIMMA' }),
+    });
+    const data = await readResponse(response);
+    return {
+      success: response.ok && data.success === true && data.sheetsSyncSuccess === true,
+      databaseReset: data.databaseReset === true,
+      message: String(data.message || (response.ok ? 'Reset selesai.' : `Reset ditolak server (${response.status}).`)),
+    };
+  } catch (error: unknown) {
+    return {
+      success: false,
+      databaseReset: false,
+      message: error instanceof Error ? error.message : 'Tidak dapat menghubungi server BIMMA.',
+    };
+  }
+}
+
 export async function triggerD1GoogleSheetsSync(): Promise<{
   success: boolean;
   message: string;

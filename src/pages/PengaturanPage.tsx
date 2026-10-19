@@ -33,7 +33,7 @@ import {
 import { UserAccount } from '../types';
 import { GOOGLE_APPS_SCRIPT_CODE } from '../gasScript';
 import { initRekapFormulasInSheet } from '../sheetApi';
-import { d1MigrateRelationalCollections, triggerD1GoogleSheetsSync } from '../services/d1Storage';
+import { d1MigrateRelationalCollections, resetD1OperationalData, triggerD1GoogleSheetsSync } from '../services/d1Storage';
 
 export const PengaturanPage: React.FC = () => {
   const config = getConfig();
@@ -78,6 +78,7 @@ export const PengaturanPage: React.FC = () => {
     message: '',
   });
   const [copiedCode, setCopiedCode] = useState(false);
+  const [resettingData, setResettingData] = useState(false);
   const [sheetSyncResult, setSheetSyncResult] = useState<{
     status: 'idle' | 'loading' | 'success' | 'error';
     message: string;
@@ -272,6 +273,32 @@ export const PengaturanPage: React.FC = () => {
       status: result.success ? 'success' : 'error',
       message: result.message,
     });
+  };
+
+  const handleResetOperationalData = async () => {
+    if (currentUser?.role !== 'ADMIN') {
+      window.alert('Hanya Admin yang boleh membersihkan data operasional.');
+      return;
+    }
+    const confirmed = window.confirm(
+      'PERINGATAN: semua data peserta, batch, jadwal, absensi, izin, pembenaran, musyrif, sesi historis, dan rekap di aplikasi serta Google Sheets akan dibersihkan. Akun ADMIN dan konfigurasi integrasi dipertahankan. Tindakan ini tidak dapat dibatalkan. Lanjutkan?'
+    );
+    if (!confirmed) return;
+    const phrase = window.prompt('Untuk konfirmasi, ketik persis: HAPUS DATA BIMMA');
+    if (phrase !== 'HAPUS DATA BIMMA') {
+      window.alert('Konfirmasi tidak cocok. Tidak ada data yang dihapus.');
+      return;
+    }
+
+    setResettingData(true);
+    setSheetSyncResult({ status: 'loading', message: 'Membersihkan data operasional D1 dan Google Sheets...' });
+    const result = await resetD1OperationalData();
+    setResettingData(false);
+    setSheetSyncResult({ status: result.success ? 'success' : 'error', message: result.message });
+    if (result.databaseReset) {
+      // D1 is canonical; reload so stale browser caches are rehydrated from the clean store.
+      window.setTimeout(() => window.location.reload(), 3500);
+    }
   };
 
   // Uji Ping
@@ -680,6 +707,16 @@ export const PengaturanPage: React.FC = () => {
                   : 'Sinkronkan Sekarang'}
               </span>
             </button>
+            {currentUser?.role === 'ADMIN' && (
+              <button
+                type="button"
+                onClick={handleResetOperationalData}
+                disabled={resettingData || sheetSyncResult.status === 'loading'}
+                className="px-3.5 py-2 bg-rose-700 hover:bg-rose-800 text-white font-bold rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
+              >
+                {resettingData ? 'Membersihkan...' : 'Bersihkan Semua Data Operasional'}
+              </button>
+            )}
             <button
               type="submit"
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-xs transition cursor-pointer ml-auto"

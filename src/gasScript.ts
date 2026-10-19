@@ -416,6 +416,91 @@ function upsertOutputRows_(sheetName, headers, records, idField, rowMapper) {
 }
 
 
+// Replace the complete source-tab contents with the canonical collection.
+// Headers and sheet formatting are retained; records absent from D1 are removed.
+function replaceOutputRows_(sheetName, headers, records, idField, rowMapper) {
+  var sheet = ensureOutputHeaders_(sheetName, headers);
+  var lastRow = sheet.getLastRow();
+  var lastColumn = Math.max(sheet.getLastColumn(), headers.length, 1);
+  var existingIds = {};
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues().forEach(function(row) {
+      var id = String(row[0] || '').trim();
+      if (id) existingIds[id] = true;
+    });
+  }
+
+  var seen = {};
+  var values = [];
+  (records || []).forEach(function(record) {
+    var id = String(record && record[idField] || '').trim();
+    if (!id) return;
+    if (seen[id]) throw new Error('ID duplikat saat mengganti isi sheet ' + sheetName + ': ' + id);
+    seen[id] = true;
+    var row = rowMapper(record);
+    while (row.length < headers.length) row.push('');
+    values.push(row.slice(0, headers.length));
+  });
+
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, lastColumn).clearContent();
+  if (values.length > sheet.getMaxRows() - 1) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), values.length - (sheet.getMaxRows() - 1));
+  }
+  if (values.length) sheet.getRange(2, 1, values.length, headers.length).setValues(values);
+
+  var inserted = 0;
+  var updated = 0;
+  Object.keys(seen).forEach(function(id) { if (existingIds[id]) updated++; else inserted++; });
+  var deleted = Object.keys(existingIds).filter(function(id) { return !seen[id]; }).length;
+  return { inserted: inserted, updated: updated, deleted: deleted };
+}
+
+// Clear data rows but keep sheet names, headers, column widths, and formatting.
+function pruneSessionsForMissingSchedules_(schedules) {
+  var validScheduleIds = {};
+  (schedules || []).forEach(function(schedule) {
+    var id = String(schedule.jadwalId || schedule.jadwal_id || schedule.id || '').trim();
+    if (id) validScheduleIds[id] = true;
+  });
+  var sheet = findExactSheet_(SpreadsheetApp.getActiveSpreadsheet(), 'SESI_KEGIATAN');
+  if (!sheet || sheet.getLastRow() < 2 || sheet.getLastColumn() < 1) return 0;
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+  var scheduleColumn = headers.findIndex(function(header) {
+    return String(header || '').trim().toLowerCase() === 'jadwalid';
+  });
+  if (scheduleColumn < 0) return 0;
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+  var removed = 0;
+  for (var index = values.length - 1; index >= 0; index--) {
+    var id = String(values[index][scheduleColumn] || '').trim();
+    if (id && !validScheduleIds[id]) {
+      sheet.deleteRow(index + 2);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+function clearOperationalSheetsForReset_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var exactNames = {
+    'DATA_PESERTA': true, 'DATA_PENGGUNA': true, 'PESERTA': true,
+    'ABSENSI': true, 'JADWAL': true, 'BATCH': true, 'IZIN': true,
+    'PEMBENARAN': true, 'SESI_KEGIATAN': true, 'DATA_STATUS_HARIAN': true,
+    'REKAP_PER_ORANG': true, 'REKAP_HARIAN_KEGIATAN': true,
+    'REKAP_BATCH': true, 'REKAP_MINGGUAN': true, 'absensi all': true
+  };
+  ss.getSheets().forEach(function(sheet) {
+    var name = sheet.getName();
+    var isLegacyBackup = /^PESERTA_LEGACY_BACKUP(?:_\d+)?$/.test(name);
+    if (!exactNames[name] && !isLegacyBackup) return;
+    var rows = sheet.getLastRow();
+    var columns = sheet.getLastColumn();
+    if (rows > 1 && columns > 0) sheet.getRange(2, 1, rows - 1, columns).clearContent();
+  });
+}
+
+
 function isScheduleActiveOnDate_(schedule, dateString) {
   if (!schedule || schedule.statusAktif === false) return false;
 
@@ -762,13 +847,21 @@ function runSessionRowsCreationSmokeTest() {
 }
 
 function handleSyncAllData(data) {
+  if (data && data.resetAllOperationalData === true) clearOperationalSheetsForReset_();
   var now = getCurrentTimeIso();
-  var totals = { inserted: 0, updated: 0 };
+  var totals = { inserted: 0, updated: 0, deleted: 0 };
+  var replaceSheets = {
+    DATA_PESERTA: true, DATA_PENGGUNA: true, ABSENSI: true,
+    JADWAL: true, BATCH: true, IZIN: true, PEMBENARAN: true
+  };
 
   function sync(name, headers, records, idField, mapper) {
-    var result = upsertOutputRows_(name, headers, records, idField, mapper);
-    totals.inserted += result.inserted;
-    totals.updated += result.updated;
+    var result = replaceSheets[name]
+      ? replaceOutputRows_(name, headers, records, idField, mapper)
+      : upsertOutputRows_(name, headers, records, idField, mapper);
+    totals.inserted += result.inserted || 0;
+    totals.updated += result.updated || 0;
+    totals.deleted += result.deleted || 0;
   }
 
   sync("DATA_PESERTA", [
@@ -824,6 +917,9 @@ function handleSyncAllData(data) {
       j.statusAktif, j.keterangan || "", JSON.stringify(days)
     ];
   });
+
+  // Purge historical sessions when their schedule has been removed from D1.
+  pruneSessionsForMissingSchedules_(data.jadwal || []);
 
   sync("BATCH", [
     "BatchID", "NamaBatch", "Tahun", "TanggalMulai", "TanggalSelesai",
@@ -947,10 +1043,9 @@ function handleSyncAllData(data) {
   handleGenerateOutputTables(data.tanggalLaporan);
   return {
     success: true,
-    message: "Sinkronisasi sumber data selesai. " +
-      totals.inserted + " baris baru dan " + totals.updated +
-      " baris diperbarui. Data lama yang tidak dikirim tidak dihapus.",
-    count: totals.inserted + totals.updated
+    message: "Sinkronisasi selesai. " + totals.inserted + " baris baru, " +
+      totals.updated + " baris diperbarui, dan " + totals.deleted + " baris usang dihapus dari sheet sumber.",
+    count: totals.inserted + totals.updated + totals.deleted
   };
 }
 

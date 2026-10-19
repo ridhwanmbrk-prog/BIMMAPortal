@@ -340,6 +340,117 @@ async function readStoredCollection(env: Env, key: string): Promise<JsonRow[]> {
   return parseCollectionArray(String(stored.value_json ?? '[]'), key);
 }
 
+async function writeStoredCollection(env: Env, key: string, rows: JsonRow[]): Promise<void> {
+  await env.DB.prepare(`
+    INSERT INTO app_collections (collection_key, value_json, updated_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(collection_key) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')
+  `).bind(key, JSON.stringify(rows)).run();
+}
+
+function rowId(row: JsonRow, ...keys: string[]): string {
+  return pickText(row, ...keys);
+}
+
+async function reconcileCollectionDeletes(
+  env: Env,
+  key: string,
+  previousRows: JsonRow[],
+  nextRows: JsonRow[],
+): Promise<void> {
+  const idFields: Record<string, string[]> = {
+    PESERTA: ['pesertaId', 'peserta_id', 'id'],
+    BATCH: ['batchId', 'batch_id', 'id'],
+    JADWAL: ['jadwalId', 'jadwal_id', 'id'],
+    ABSENSI: ['absensiId', 'absensi_id', 'id'],
+    IZIN: ['izinId', 'izin_id', 'id'],
+    PEMBENARAN: ['pembenaranId', 'pembenaran_id', 'id'],
+    MUSYRIF: ['musyrifId', 'musyrif_id', 'id'],
+  };
+  const idKeys = idFields[key];
+  if (!idKeys) return;
+  const nextIds = new Set(nextRows.map(row => rowId(row, ...idKeys)).filter(Boolean));
+  const deletedIds = Array.from(new Set(
+    previousRows.map(row => rowId(row, ...idKeys)).filter(id => id && !nextIds.has(id))
+  ));
+  if (!deletedIds.length) return;
+
+  if (key === 'PESERTA') {
+    const removed = new Set(deletedIds);
+    for (const dependentKey of ['ABSENSI', 'IZIN', 'PEMBENARAN']) {
+      const rows = await readStoredCollection(env, dependentKey);
+      const filtered = rows.filter(row => !removed.has(pickText(row, 'pesertaId', 'peserta_id')));
+      if (filtered.length !== rows.length) await writeStoredCollection(env, dependentKey, filtered);
+    }
+    for (const id of deletedIds) {
+      // Preserve ADMIN accounts even if legacy data linked an admin to a participant.
+      await env.DB.prepare("UPDATE users SET peserta_id = NULL WHERE peserta_id = ? AND role = 'ADMIN'").bind(id).run();
+      const linkedUsers = await env.DB.prepare("SELECT id FROM users WHERE peserta_id = ? AND role <> 'ADMIN'").bind(id).all<any>();
+      for (const user of linkedUsers.results || []) {
+        await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(String(user.id)).run();
+      }
+      await env.DB.prepare('DELETE FROM sessions WHERE peserta_id = ?').bind(id).run();
+      await env.DB.prepare('DELETE FROM absensi WHERE peserta_id = ?').bind(id).run();
+      await env.DB.prepare('DELETE FROM izin WHERE peserta_id = ?').bind(id).run();
+      await env.DB.prepare('DELETE FROM pembenaran WHERE peserta_id = ?').bind(id).run();
+      await env.DB.prepare('DELETE FROM batch_peserta WHERE peserta_id = ?').bind(id).run();
+      await env.DB.prepare("DELETE FROM users WHERE peserta_id = ? AND role <> 'ADMIN'").bind(id).run();
+      await env.DB.prepare('DELETE FROM peserta WHERE id = ?').bind(id).run();
+    }
+    return;
+  }
+
+  if (key === 'JADWAL') {
+    // Do not keep attendance/correction records whose parent schedule was deleted.
+    for (const dependentKey of ['ABSENSI', 'PEMBENARAN']) {
+      const rows = await readStoredCollection(env, dependentKey);
+      const filtered = rows.filter(row => !deletedIds.includes(pickText(row, 'jadwalId', 'jadwal_id')));
+      if (filtered.length !== rows.length) await writeStoredCollection(env, dependentKey, filtered);
+    }
+    for (const id of deletedIds) {
+      await env.DB.prepare('DELETE FROM absensi WHERE jadwal_id = ?').bind(id).run();
+      await env.DB.prepare('DELETE FROM pembenaran WHERE jadwal_id = ?').bind(id).run();
+      await env.DB.prepare('DELETE FROM jadwal_kegiatan WHERE id = ?').bind(id).run();
+    }
+    return;
+  }
+
+  const tableByKey: Record<string, string> = {
+    ABSENSI: 'absensi', IZIN: 'izin', PEMBENARAN: 'pembenaran', MUSYRIF: 'musyrif',
+  };
+  if (key === 'BATCH') {
+    const participants = await readStoredCollection(env, 'PESERTA');
+    const schedules = await readStoredCollection(env, 'JADWAL');
+    for (const id of deletedIds) {
+      if (participants.some(row => pickText(row, 'batchId', 'batch_id') === id)) {
+        throw new Error(`Batch ${id} masih dipakai peserta. Pindahkan peserta ke batch lain terlebih dahulu.`);
+      }
+      if (schedules.some(row => pickText(row, 'batchId', 'batch_id') === id)) {
+        throw new Error(`Batch ${id} masih dipakai jadwal. Hapus atau pindahkan jadwal terlebih dahulu.`);
+      }
+      const linked = await env.DB.prepare(
+        'SELECT COUNT(*) AS count FROM batch_peserta WHERE batch_id = ?'
+      ).bind(id).first<any>();
+      const scheduled = await env.DB.prepare(
+        'SELECT COUNT(*) AS count FROM jadwal_kegiatan WHERE batch_id = ?'
+      ).bind(id).first<any>();
+      if (Number(linked?.count || 0) > 0 || Number(scheduled?.count || 0) > 0) {
+        throw new Error(`Batch ${id} masih dipakai tabel relasional. Hapus relasi terkait terlebih dahulu.`);
+      }
+      await env.DB.prepare('DELETE FROM batch WHERE id = ?').bind(id).run();
+    }
+    return;
+  }
+
+  const table = tableByKey[key];
+  if (!table) return;
+  // Delete only IDs removed from the previous canonical collection.
+  // Preserve unrelated historical SQL records not represented in that collection.
+  for (const id of deletedIds) {
+    await env.DB.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(id).run();
+  }
+}
+
 async function runInChunks(env: Env, statements: D1PreparedStatement[], chunkSize = 80): Promise<void> {
   for (let offset = 0; offset < statements.length; offset += chunkSize) {
     await env.DB.batch(statements.slice(offset, offset + chunkSize));
@@ -652,6 +763,7 @@ async function loadSheetSyncCollection(
 async function runGoogleSheetsSync(
   env: Env,
   reportDate = new Date(),
+  resetAllOperationalData = false,
 ): Promise<SheetsSyncOutcome> {
   try {
     const syncSecret = String(env.GOOGLE_SHEETS_SYNC_TOKEN || "").trim();
@@ -731,6 +843,7 @@ async function runGoogleSheetsSync(
       batch: data.BATCH,
       izin: data.IZIN,
       pembenaran: data.PEMBENARAN,
+      resetAllOperationalData,
     };
 
     const response = await fetch(backendUrl, {
@@ -1201,6 +1314,51 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       }
     }
 
+    if (
+      (path === '/admin/reset-operational-data' || path === '/d1/admin/reset-operational-data') &&
+      request.method === 'POST'
+    ) {
+      const session = await requireSession(request, env);
+      if (!requireRole(session, ['ADMIN'])) {
+        return jsonResponse({ success: false, message: 'Hanya Admin yang boleh membersihkan data aplikasi.' }, session ? 403 : 401);
+      }
+      const body = await request.json().catch(() => ({})) as any;
+      if (String(body.confirmation || '') !== 'HAPUS DATA BIMMA') {
+        return jsonResponse({ success: false, message: 'Konfirmasi tidak cocok. Tidak ada data yang dihapus.' }, 400);
+      }
+
+      const dataKeys = ['PESERTA', 'BATCH', 'JADWAL', 'ABSENSI', 'IZIN', 'PEMBENARAN', 'MUSYRIF', 'AUDIT'];
+      const statements: D1PreparedStatement[] = [
+        env.DB.prepare("DELETE FROM sessions WHERE peserta_id IS NOT NULL OR user_id IN (SELECT id FROM users WHERE role <> 'ADMIN')"),
+        env.DB.prepare("UPDATE users SET peserta_id = NULL WHERE role = 'ADMIN'"),
+        env.DB.prepare("DELETE FROM users WHERE role <> 'ADMIN'"),
+        env.DB.prepare('DELETE FROM batch_peserta'),
+        env.DB.prepare('DELETE FROM absensi'),
+        env.DB.prepare('DELETE FROM izin'),
+        env.DB.prepare('DELETE FROM pembenaran'),
+        env.DB.prepare('DELETE FROM jadwal_kegiatan'),
+        env.DB.prepare('DELETE FROM musyrif'),
+        env.DB.prepare('DELETE FROM audit_logs'),
+        env.DB.prepare('DELETE FROM peserta'),
+        env.DB.prepare('DELETE FROM batch'),
+        ...dataKeys.map(key => env.DB.prepare(`
+          INSERT INTO app_collections (collection_key, value_json, updated_at)
+          VALUES (?, '[]', datetime('now'))
+          ON CONFLICT(collection_key) DO UPDATE SET value_json = '[]', updated_at = datetime('now')
+        `).bind(key)),
+      ];
+      await env.DB.batch(statements);
+      const sheetSync = await runGoogleSheetsSync(env, new Date(), true);
+      return jsonResponse({
+        success: true,
+        databaseReset: true,
+        sheetsSyncSuccess: sheetSync.success,
+        message: sheetSync.success
+          ? 'Data operasional D1 dan Google Sheets berhasil dibersihkan. Akun ADMIN dan konfigurasi dipertahankan.'
+          : 'D1 sudah dibersihkan, tetapi Google Sheets belum berhasil dibersihkan: ' + sheetSync.message + ' Jalankan Sinkronkan Sekarang setelah integrasi diperbaiki.',
+      });
+    }
+
     // D1 is the canonical application store. Browser localStorage is only a hydrated cache.
     const collectionKeys = new Set([
       'CONFIG', 'PESERTA', 'BATCH', 'JADWAL', 'ABSENSI', 'IZIN',
@@ -1256,33 +1414,41 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       // app_collections stays intact as the compatibility source until every module
       // (especially recurring jadwal/absensi) has a verified normalized schema.
       if (key === 'PESERTA' && Array.isArray(body.items)) {
-        // Reject malformed rows instead of silently keeping JSON and SQL out of sync.
+        const previousRows = await readStoredCollection(env, 'PESERTA');
         const rows = body.items as JsonRow[];
         const normalized = rows.map(normalizeParticipantRow);
         assertUniqueValues(normalized, row => row.id, 'PESERTA');
         assertUniqueValues(normalized, row => row.nim, 'PESERTA (NIM)');
         await validateParticipantBatchReferences(env, normalized);
+        await reconcileCollectionDeletes(env, key, previousRows, rows);
         await upsertParticipants(env, rows);
         await syncBatchParticipantLinks(env, rows);
       }
 
       if (key === 'BATCH' && Array.isArray(body.items)) {
+        const previousRows = await readStoredCollection(env, 'BATCH');
         const normalized = (body.items as JsonRow[]).map(normalizeBatchRow);
         assertUniqueValues(normalized, row => row.id, 'BATCH');
-        // Validate the participant references before writing batches, using both
-        // already-persisted IDs and IDs being introduced in this request.
         const participantRows = await readStoredCollection(env, 'PESERTA');
         await validateParticipantBatchReferences(
           env,
           participantRows.map(normalizeParticipantRow),
           normalized.map(row => row.id),
         );
+        await reconcileCollectionDeletes(env, key, previousRows, body.items as JsonRow[]);
         await upsertBatches(env, body.items);
         await syncBatchParticipantLinks(env, participantRows);
       }
 
       if (key === 'IZIN' && Array.isArray(body.items)) {
+        const previousRows = await readStoredCollection(env, 'IZIN');
         await upsertIzin(env, body.items);
+        await reconcileCollectionDeletes(env, key, previousRows, body.items as JsonRow[]);
+      }
+
+      if (['JADWAL', 'ABSENSI', 'PEMBENARAN', 'MUSYRIF'].includes(key) && Array.isArray(body.items)) {
+        const previousRows = await readStoredCollection(env, key);
+        await reconcileCollectionDeletes(env, key, previousRows, body.items as JsonRow[]);
       }
 
       await env.DB.prepare(`
