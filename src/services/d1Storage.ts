@@ -547,3 +547,39 @@ export async function d1LoginStaff(
     };
   }
 }
+
+export async function triggerD1GoogleSheetsSync(): Promise<{
+  success: boolean;
+  message: string;
+  count?: number;
+}> {
+  try {
+    const response = await d1Request("/sheets/sync-now", {
+      method: "POST",
+    });
+    const data = await readResponse(response);
+
+    if (!response.ok || data.success !== true) {
+      return {
+        success: false,
+        message:
+          data.message ||
+          `Sinkronisasi ditolak server (${response.status}).`,
+      };
+    }
+
+    return {
+      success: true,
+      message: data.message || "Sinkronisasi Google Sheets berhasil.",
+      count: Number(data.count || 0),
+    };
+  } catch (error: unknown) {
+    return {
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Tidak dapat menghubungi server BIMMA.",
+    };
+  }
+}

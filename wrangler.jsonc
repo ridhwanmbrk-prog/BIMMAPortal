@@ -21,6 +21,9 @@
     "DOMAIN": "https://absensi.bimma-uab.my.id",
     "ENVIRONMENT": "production"
   },
+  "triggers": {
+    "crons": ["30 16 * * *"]
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 0.01

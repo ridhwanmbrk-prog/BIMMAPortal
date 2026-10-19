@@ -35,7 +35,24 @@ function doPost(e) {
     } else if (action === "sync_absensi") {
       result = handleSyncAbsensi(data.absensi || []);
     } else if (action === "sync_all_data") {
-      result = handleSyncAllData(data);
+      var expectedSyncSecret = PropertiesService
+        .getScriptProperties()
+        .getProperty("BIMMA_SYNC_SECRET");
+      var suppliedSyncSecret = String(data.syncSecret || "");
+
+      if (
+        !expectedSyncSecret ||
+        !suppliedSyncSecret ||
+        suppliedSyncSecret !== expectedSyncSecret
+      ) {
+        result = {
+          success: false,
+          message: "Token sinkronisasi server tidak valid atau belum dikonfigurasi."
+        };
+      } else {
+        delete data.syncSecret;
+        result = handleSyncAllData(data);
+      }
     } else if (action === "scan_presensi") {
       result = handleScanPresensi(data);
     } else if (action === "init_database") {

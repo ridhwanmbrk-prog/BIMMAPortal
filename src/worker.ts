@@ -33,6 +33,7 @@ export interface Env {
   DOMAIN?: string;
   ENVIRONMENT?: string;
   ADMIN_BOOTSTRAP_SECRET?: string;
+  GOOGLE_SHEETS_SYNC_TOKEN?: string;
 }
 
 const DOMAIN = 'https://absensi.bimma-uab.my.id';
@@ -612,6 +613,163 @@ async function seedRelationalTablesFromCollections(env: Env): Promise<{ batches:
   return { batches: batchRows.length, participants: participantRows.length, izin: izinRows.length };
 }
 
+
+type SheetsSyncOutcome = {
+  success: boolean;
+  message: string;
+  count?: number;
+};
+
+function jakartaDateString(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const part = (type: string) =>
+    parts.find((item) => item.type === type)?.value || "";
+
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+async function loadSheetSyncCollection(
+  env: Env,
+  key: string,
+): Promise<JsonRow[]> {
+  const row = await env.DB.prepare(
+    "SELECT value_json FROM app_collections WHERE collection_key = ?"
+  ).bind(key).first<any>();
+
+  if (!row) {
+    throw new Error(`Koleksi ${key} belum tersedia di D1.`);
+  }
+
+  return parseCollectionArray(String(row.value_json ?? "[]"), key);
+}
+
+async function runGoogleSheetsSync(
+  env: Env,
+  reportDate = new Date(),
+): Promise<SheetsSyncOutcome> {
+  try {
+    const syncSecret = String(env.GOOGLE_SHEETS_SYNC_TOKEN || "").trim();
+    if (!syncSecret) {
+      throw new Error("Secret GOOGLE_SHEETS_SYNC_TOKEN belum dikonfigurasi.");
+    }
+
+    const configRow = await env.DB.prepare(
+      "SELECT value_json FROM app_collections WHERE collection_key = ?"
+    ).bind("CONFIG").first<any>();
+
+    if (!configRow) {
+      throw new Error("Koleksi CONFIG belum tersedia di D1.");
+    }
+
+    const config = JSON.parse(String(configRow.value_json || "{}"));
+    const backendUrl = String(config?.backendUrl || "").trim();
+
+    if (!backendUrl) {
+      throw new Error(
+        "URL Google Apps Script belum tersimpan di Pengaturan BIMMA."
+      );
+    }
+
+    const endpoint = new URL(backendUrl);
+    if (
+      endpoint.protocol !== "https:" ||
+      ![
+        "script.google.com",
+        "script.googleusercontent.com",
+      ].includes(endpoint.hostname)
+    ) {
+      throw new Error("URL Google Apps Script bukan URL HTTPS yang valid.");
+    }
+
+    const keys = [
+      "PESERTA",
+      "ABSENSI",
+      "JADWAL",
+      "BATCH",
+      "IZIN",
+      "PEMBENARAN",
+    ];
+
+    const collections = await Promise.all(
+      keys.map((key) => loadSheetSyncCollection(env, key))
+    );
+
+    const data: Record<string, JsonRow[]> = {};
+    keys.forEach((key, index) => {
+      data[key] = collections[index];
+    });
+
+    // Hanya pilih kolom pengguna yang diperlukan. Password/hash tidak diekspor.
+    const usersResult = await env.DB.prepare(`
+      SELECT id, peserta_id, gender, role, nama_lengkap, status
+      FROM users
+    `).all<any>();
+
+    const pengguna = (usersResult.results || []).map((row: any) => ({
+      id: String(row.id || ""),
+      pesertaId: String(row.peserta_id || ""),
+      gender: String(row.gender || ""),
+      role: String(row.role || ""),
+      namaLengkap: String(row.nama_lengkap || ""),
+      statusAktif: String(row.status || "").toUpperCase() === "AKTIF",
+    }));
+
+    const payload = {
+      action: "sync_all_data",
+      syncSecret,
+      tanggalLaporan: jakartaDateString(reportDate),
+      pengguna,
+      peserta: data.PESERTA,
+      absensi: data.ABSENSI,
+      jadwal: data.JADWAL,
+      batch: data.BATCH,
+      izin: data.IZIN,
+      pembenaran: data.PEMBENARAN,
+    };
+
+    const response = await fetch(backendUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain;charset=utf-8",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result: any = await response.json().catch(() => null);
+
+    if (!response.ok || result?.success !== true) {
+      throw new Error(
+        String(
+          result?.message ||
+          `Apps Script gagal memproses sinkronisasi (HTTP ${response.status}).`
+        )
+      );
+    }
+
+    return {
+      success: true,
+      count: Number(result.count || 0),
+      message: String(result.message || "Sinkronisasi Google Sheets berhasil."),
+    };
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error ? error.message : String(error);
+
+    console.error("[BIMMA_GOOGLE_SHEETS_SYNC]", { message });
+
+    return {
+      success: false,
+      message: `Sinkronisasi Google Sheets gagal: ${message}`,
+    };
+  }
+}
+
 async function handleApiRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api/, '');
@@ -1135,6 +1293,23 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ success: true, key, updatedAt: new Date().toISOString() });
     }
 
+    if (
+      (path === "/sheets/sync-now" || path === "/d1/sheets/sync-now") &&
+      request.method === "POST"
+    ) {
+      const session = await requireSession(request, env);
+
+      if (!requireRole(session, ["ADMIN"])) {
+        return jsonResponse(
+          { success: false, message: "Hanya Admin yang boleh menyinkronkan Google Sheets." },
+          session ? 403 : 401
+        );
+      }
+
+      const result = await runGoogleSheetsSync(env);
+      return jsonResponse(result, result.success ? 200 : 502);
+    }
+
     if ((path === '/sync' || path === '/d1/sync') && request.method === 'GET') {
       const session = await requireSession(request, env);
       if (!requireRole(session, ['ADMIN', 'PETUGAS'])) return jsonResponse({ success: false, message: 'Login Admin/Petugas diperlukan.' }, session ? 403 : 401);
@@ -1328,6 +1503,31 @@ function render404Page(requestedPath: string): Response {
  * Main Worker Fetch Event Handler
  */
 export default {
+  async scheduled(
+    controller: { cron: string; scheduledTime: number },
+    env: Env,
+  ): Promise<void> {
+    const result = await runGoogleSheetsSync(
+      env,
+      new Date(controller.scheduledTime)
+    );
+
+    if (!result.success) {
+      console.error("[BIMMA_GOOGLE_SHEETS_CRON_FAILED]", {
+        cron: controller.cron,
+        message: result.message,
+      });
+      throw new Error(result.message);
+    }
+
+    console.log("[BIMMA_GOOGLE_SHEETS_CRON_SUCCESS]", {
+      cron: controller.cron,
+      reportDate: jakartaDateString(new Date(controller.scheduledTime)),
+      count: result.count || 0,
+      message: result.message,
+    });
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.pathname;

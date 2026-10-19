@@ -33,7 +33,7 @@ import {
 import { UserAccount } from '../types';
 import { GOOGLE_APPS_SCRIPT_CODE } from '../gasScript';
 import { initRekapFormulasInSheet } from '../sheetApi';
-import { d1MigrateRelationalCollections } from '../services/d1Storage';
+import { d1MigrateRelationalCollections, triggerD1GoogleSheetsSync } from '../services/d1Storage';
 
 export const PengaturanPage: React.FC = () => {
   const config = getConfig();
@@ -78,6 +78,10 @@ export const PengaturanPage: React.FC = () => {
     message: '',
   });
   const [copiedCode, setCopiedCode] = useState(false);
+  const [sheetSyncResult, setSheetSyncResult] = useState<{
+    status: 'idle' | 'loading' | 'success' | 'error';
+    message: string;
+  }>({ status: 'idle', message: '' });
   const [relationalMigration, setRelationalMigration] = useState<{
     status: 'idle' | 'loading' | 'success' | 'error'; message: string;
   }>({ status: 'idle', message: '' });
@@ -237,6 +241,37 @@ export const PengaturanPage: React.FC = () => {
     } else {
       setFormulaResult({ status: 'error', message: res.message });
     }
+  };
+
+  // Sinkronisasi manual melalui Worker; hanya Admin yang diizinkan.
+  const handleSyncSheetsNow = async () => {
+    if (currentUser?.role !== 'ADMIN') {
+      setSheetSyncResult({
+        status: 'error',
+        message: 'Hanya Admin yang boleh menjalankan sinkronisasi.',
+      });
+      return;
+    }
+
+    const savedUrl = String(getConfig().backendUrl || '').trim();
+    if (!backendUrl.trim() || savedUrl !== backendUrl.trim()) {
+      setSheetSyncResult({
+        status: 'error',
+        message: 'Simpan URL Google Apps Script terlebih dahulu.',
+      });
+      return;
+    }
+
+    setSheetSyncResult({
+      status: 'loading',
+      message: 'Sedang menyinkronkan koleksi D1 ke Google Sheets...',
+    });
+
+    const result = await triggerD1GoogleSheetsSync();
+    setSheetSyncResult({
+      status: result.success ? 'success' : 'error',
+      message: result.message,
+    });
   };
 
   // Uji Ping
@@ -634,6 +669,18 @@ export const PengaturanPage: React.FC = () => {
               <span>Pasang 4 Formula ke Sheet</span>
             </button>
             <button
+              type="button"
+              onClick={handleSyncSheetsNow}
+              disabled={sheetSyncResult.status === 'loading'}
+              className="px-3.5 py-2 bg-blue-700 hover:bg-blue-800 text-white font-bold rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
+            >
+              <span>
+                {sheetSyncResult.status === 'loading'
+                  ? 'Menyinkronkan...'
+                  : 'Sinkronkan Sekarang'}
+              </span>
+            </button>
+            <button
               type="submit"
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-xs transition cursor-pointer ml-auto"
             >
@@ -641,6 +688,21 @@ export const PengaturanPage: React.FC = () => {
             </button>
           </div>
         </form>
+
+        {sheetSyncResult.status !== 'idle' && (
+          <div
+            role="status"
+            className={`p-3 rounded-xl border text-xs ${
+              sheetSyncResult.status === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : sheetSyncResult.status === 'error'
+                  ? 'bg-rose-50 border-rose-200 text-rose-900'
+                  : 'bg-slate-50 border-slate-200 text-slate-700'
+            }`}
+          >
+            <p className="font-semibold">{sheetSyncResult.message}</p>
+          </div>
+        )}
 
         {formulaResult.status !== 'idle' && (
           <div
