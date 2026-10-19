@@ -210,7 +210,7 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
       'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
     );
     const actual = new Uint8Array(await crypto.subtle.deriveBits(
-      { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, expected.length * 8
+      { name: 'PBKDF2', salt: new Uint8Array(salt).buffer as ArrayBuffer, iterations, hash: 'SHA-256' }, key, expected.length * 8
     ));
     if (actual.length !== expected.length) return false;
     let diff = 0;

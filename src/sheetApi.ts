@@ -1,4 +1,5 @@
-import { Peserta, Absensi, JadwalKegiatan } from './types';
+import { getBusinessDateString } from './utils/date';
+import { Peserta, Absensi, JadwalKegiatan, Batch, Izin, Pembenaran, UserAccount } from './types';
 
 export interface SheetSyncResult {
   success: boolean;
@@ -60,7 +61,7 @@ export async function fetchSantriFromSheet(backendUrl: string): Promise<SheetSyn
         email: String(row.email || row.Email || '').trim(),
         nomorWhatsApp: String(row.nomorWhatsApp || row.NoWA || row['No WhatsApp'] || '').trim(),
         alamat: String(row.alamat || row.Alamat || '').trim(),
-        tanggalMasuk: String(row.tanggalMasuk || new Date().toISOString().split('T')[0]),
+        tanggalMasuk: String(row.tanggalMasuk || getBusinessDateString()),
         statusPeserta: row.statusPeserta === 'NONAKTIF' ? 'NONAKTIF' : 'AKTIF',
       }));
 
@@ -158,6 +159,72 @@ export async function pushAbsensiToSheet(backendUrl: string, absensiList: Absens
     return {
       success: false,
       message: 'Gagal mengirim absensi ke Google Sheet: ' + err.message,
+    };
+  }
+}
+
+
+export interface SheetSyncPayload {
+  tanggalLaporan: string;
+  pengguna: Array<Pick<UserAccount, 'id' | 'gender' | 'role' | 'namaLengkap' | 'statusAktif'>>;
+  peserta: Peserta[];
+  absensi: Absensi[];
+  jadwal: JadwalKegiatan[];
+  batch: Batch[];
+  izin: Izin[];
+  pembenaran: Pembenaran[];
+}
+
+/**
+ * Sinkronkan seluruh data BIMMA dalam satu permintaan.
+ * Apps Script akan menangani upsert berdasarkan ID dan membangun output.
+ */
+export async function pushAllDataToSheet(
+  backendUrl: string,
+  payload: SheetSyncPayload
+): Promise<SheetSyncResult> {
+  if (!backendUrl || !backendUrl.trim()) {
+    return { success: false, message: 'URL Google Apps Script belum diatur!' };
+  }
+
+  try {
+    const res = await fetch(backendUrl.trim(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'sync_all_data',
+        ...payload,
+      }),
+    });
+
+    const json = await res.json();
+
+    if (json.success) {
+      return {
+        success: true,
+        count:
+          payload.peserta.length +
+          payload.absensi.length +
+          payload.jadwal.length +
+          payload.batch.length +
+          payload.izin.length +
+          payload.pembenaran.length,
+        message:
+          json.message ||
+          'Seluruh data BIMMA berhasil dikirim ke Google Spreadsheet.',
+      };
+    }
+
+    return {
+      success: false,
+      message: json.message || 'Sinkronisasi seluruh data gagal.',
+    };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      message:
+        'Gagal menyinkronkan seluruh data: ' +
+        (err instanceof Error ? err.message : String(err)),
     };
   }
 }

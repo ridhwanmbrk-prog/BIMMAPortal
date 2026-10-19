@@ -1,3 +1,5 @@
+import { getBusinessDateString } from '../utils/date';
+import { isScheduleApplicableOnDate } from '../utils/schedule';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   User,
@@ -52,12 +54,12 @@ export const PesertaPortalPage: React.FC = () => {
 
   // Form Izin Mandiri Fields
   const [jenisIzin, setJenisIzin] = useState<JenisIzin>('IZIN_PULANG');
-  const [tglMulai, setTglMulai] = useState(new Date().toISOString().split('T')[0] + 'T08:00');
-  const [tglSelesai, setTglSelesai] = useState(new Date().toISOString().split('T')[0] + 'T21:00');
+  const [tglMulai, setTglMulai] = useState(getBusinessDateString() + 'T08:00');
+  const [tglSelesai, setTglSelesai] = useState(getBusinessDateString() + 'T21:00');
   const [alasanIzin, setAlasanIzin] = useState('');
   const [izinSuccess, setIzinSuccess] = useState<string | null>(null);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getBusinessDateString();
 
   const loadData = () => {
     const pList = getItems<Peserta>('PESERTA');
@@ -130,7 +132,9 @@ export const PesertaPortalPage: React.FC = () => {
   const myIzinList = izinList.filter((i) => i.pesertaId === peserta.pesertaId);
 
   // Status kegiatan hari ini (Kegiatan Pagi, Kegiatan Malam, dll.)
-  const statusKegiatanHariIni = jadwalList.map((j) => {
+  const statusKegiatanHariIni = jadwalList
+    .filter((j) => isScheduleApplicableOnDate(j, todayStr))
+    .map((j) => {
     const record = absensiList.find(
       (a) =>
         a.tanggal === todayStr &&

@@ -34,6 +34,7 @@ export interface Peserta {
   namaLengkap: string;
   batchId: string;
   programStudi: string;
+  gender?: 'IKHWAN' | 'AKHWAT';
   fakultas?: string;
   nomorWhatsApp?: string;
   email?: string;
@@ -72,6 +73,7 @@ export interface JadwalKegiatan {
   toleransiTutupAkhir: number; // menit
   wajib: boolean;
   statusAktif: boolean; // Tombol toggle aktif/nonaktif di ujung tabel
+  hariPelaksanaan?: number[]; // Minggu=0, Senin=1, ..., Sabtu=6
   keterangan?: string;
 }
 

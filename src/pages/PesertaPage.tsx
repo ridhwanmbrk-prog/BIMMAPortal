@@ -1,3 +1,4 @@
+import { getBusinessDateString } from '../utils/date';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Users,
@@ -169,7 +170,7 @@ export const PesertaPage: React.FC = () => {
         email: email.trim(),
         nomorWhatsApp: nomorWhatsApp.trim(),
         alamat: alamat.trim(),
-        tanggalMasuk: new Date().toISOString().split('T')[0],
+        tanggalMasuk: getBusinessDateString(),
         statusPeserta,
         createdAt: new Date().toISOString(),
       };
@@ -279,7 +280,7 @@ export const PesertaPage: React.FC = () => {
               email: rawEmail,
               nomorWhatsApp: rawWa,
               alamat: rawAlamat,
-              tanggalMasuk: new Date().toISOString().split('T')[0],
+              tanggalMasuk: getBusinessDateString(),
               statusPeserta: 'AKTIF',
               createdAt: new Date().toISOString(),
             });

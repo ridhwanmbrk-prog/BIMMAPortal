@@ -1,3 +1,4 @@
+import { getBusinessDateString } from '../utils/date';
 import React, { useState, useEffect } from 'react';
 import {
   FileCheck2,
@@ -52,8 +53,8 @@ export const IzinPage: React.FC<IzinPageProps> = ({ onOpenScanner }) => {
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedPesertaId, setSelectedPesertaId] = useState('');
   const [jenisIzin, setJenisIzin] = useState<JenisIzin>('IZIN_PULANG');
-  const [waktuMulai, setWaktuMulai] = useState(new Date().toISOString().split('T')[0] + 'T08:00');
-  const [waktuSelesai, setWaktuSelesai] = useState(new Date().toISOString().split('T')[0] + 'T21:00');
+  const [waktuMulai, setWaktuMulai] = useState(getBusinessDateString() + 'T08:00');
+  const [waktuSelesai, setWaktuSelesai] = useState(getBusinessDateString() + 'T21:00');
   const [alasanIzin, setAlasanIzin] = useState('');
 
   // Modal Verifikasi Kedatangan Santri

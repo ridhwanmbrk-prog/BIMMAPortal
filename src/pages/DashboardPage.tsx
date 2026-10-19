@@ -1,3 +1,5 @@
+import { getBusinessDateString } from '../utils/date';
+import { isScheduleApplicableOnDate } from '../utils/schedule';
 import React, { useState, useEffect } from 'react';
 import {
   Users,
@@ -88,7 +90,7 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
 
   // Kegiatan Terpilih / Sedang Berlangsung
   const [selectedJadwalId, setSelectedJadwalId] = useState<string>('');
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getBusinessDateString();
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     return localStorage.getItem('bimma_selected_date') || todayStr;
   });
@@ -208,7 +210,9 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
   // Santri yang difokuskan pada Dashboard adalah santri di Batch yang terpilih/aktif hari ini
   const pesertaInBatch = currentBatch ? pesertaList.filter((p) => p.batchId === currentBatch.batchId) : pesertaList;
   const totalSantriAktif = pesertaInBatch.length;
-  const jadwalAktif = jadwalList.filter((j) => j.statusAktif);
+  const jadwalAktif = jadwalList.filter(
+    (j) => j.statusAktif && isScheduleApplicableOnDate(j, selectedDate),
+  );
 
   // Deteksi jadwal kegiatan yang strictly sedang berlangsung saat ini sesuai jamnya
   const activeOngoingJadwal = jadwalList.find((j) => j.statusAktif && isWithinScheduleTime(j).valid) || null;
@@ -562,7 +566,9 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
 
   // HELPER 3: Overview Kehadiran Kegiatan & 3 Dynamic Stats Tiles
   const renderOverviewSection = () => {
-    const graphPoints = jadwalList.map((j, idx) => {
+    const graphPoints = jadwalList
+      .filter((j) => isScheduleApplicableOnDate(j, selectedDate))
+      .map((j, idx) => {
       const records = absensiList.filter(
         (a) =>
           a.tanggal === selectedDate &&

@@ -1,3 +1,4 @@
+import { getBusinessDateString } from './date';
 import { jsPDF } from 'jspdf';
 import { Peserta, Absensi, JadwalKegiatan } from '../types';
 import { getItems, getActiveMusyrif } from '../storage';
@@ -9,7 +10,7 @@ export interface ExportPdfOptions {
 }
 
 export function exportAttendancePdf(optionsOrDate?: string | ExportPdfOptions) {
-  let targetDate = new Date().toISOString().split('T')[0];
+  let targetDate = getBusinessDateString();
   let batchFilter = 'ALL';
   let jurusanFilter = 'ALL';
 

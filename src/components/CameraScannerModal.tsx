@@ -247,7 +247,7 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
       message: res.message,
       peserta: res.peserta,
       namaKegiatan: res.namaKegiatan,
-      waktu: res.waktuScan ? new Date(res.waktuScan).toLocaleTimeString('id-ID') : new Date().toLocaleTimeString('id-ID'),
+      waktu: res.waktuScan ? new Date(res.waktuScan).toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }) : new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }),
       keteranganWaktu: res.keteranganWaktu,
       menitKeterlambatan: res.menitKeterlambatan,
       catatan: res.catatan,
@@ -326,7 +326,7 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
             message: verifyRes.message,
             peserta: verifyRes.peserta,
             namaKegiatan: `Verifikasi Kembali ke Asrama (${verifyRes.izin?.jenisIzin || 'Izin'})`,
-            waktu: new Date().toLocaleTimeString('id-ID'),
+            waktu: new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }),
             catatan: verifyRes.izin?.catatanKedatangan,
             keteranganWaktu: verifyRes.isOverdue ? 'TERLAMBAT' : 'TEPAT_WAKTU',
           });
@@ -338,7 +338,7 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
             type: 'error',
             title: 'Verifikasi Surat Gagal',
             message: verifyRes.message,
-            waktu: new Date().toLocaleTimeString('id-ID'),
+            waktu: new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }),
           });
         }
 
@@ -359,7 +359,7 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
           type: 'warning',
           title: 'TIDAK ADA KEGIATAN',
           message: 'Saat ini tidak ada jadwal kegiatan BIMMA yang sedang berlangsung. Presensi santri otomatis dibuka saat jam kegiatan tiba.',
-          waktu: new Date().toLocaleTimeString('id-ID'),
+          waktu: new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }),
         });
         if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
         toastTimeoutRef.current = setTimeout(() => {
@@ -389,7 +389,7 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
             type: 'error',
             title: 'QR PESERTA TIDAK VALID',
             message: 'ID peserta dan NIM tidak cocok dengan data peserta.',
-            waktu: new Date().toLocaleTimeString('id-ID'),
+            waktu: new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }),
           });
 
           if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);

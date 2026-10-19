@@ -1,3 +1,4 @@
+import { getBusinessDateString } from './date';
 import * as XLSX from 'xlsx';
 import { Peserta } from '../types';
 import { getItems, setItems, addAuditLog, getCurrentUser } from '../storage';
@@ -59,7 +60,7 @@ export async function importStudentsFromSpreadsheet(file: File): Promise<{ succe
               email: rawEmail,
               nomorWhatsApp: rawWa,
               alamat: rawAlamat,
-              tanggalMasuk: new Date().toISOString().split('T')[0],
+              tanggalMasuk: getBusinessDateString(),
               statusPeserta: 'AKTIF',
               createdAt: new Date().toISOString(),
             });

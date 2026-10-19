@@ -306,7 +306,7 @@ export default function App() {
     );
   }
 
-  if (currentUser && isD1Bootstrapping && routeState.type !== 'PUBLIC_FORM') {
+  if (currentUser && isD1Bootstrapping) {
     return <div className="min-h-screen flex items-center justify-center bg-emerald-50 p-6 text-center text-emerald-900"><div><div className="text-lg font-bold">Memuat data BIMMA dari Cloudflare D1…</div><div className="mt-2 text-sm">Halaman dibuka setelah data server berhasil diverifikasi.</div></div></div>;
   }
 

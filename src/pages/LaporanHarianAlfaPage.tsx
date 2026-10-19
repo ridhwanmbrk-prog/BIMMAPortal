@@ -1,3 +1,5 @@
+import { getBusinessDateString } from '../utils/date';
+import { isScheduleApplicableOnDate } from '../utils/schedule';
 import React, { useState, useEffect } from 'react';
 import {
   AlertCircle,
@@ -31,8 +33,11 @@ export const LaporanHarianAlfaPage: React.FC = () => {
   const [absensiList, setAbsensiList] = useState<Absensi[]>([]);
   const [izinList, setIzinList] = useState<Izin[]>([]);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getBusinessDateString();
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const jadwalUntukTanggal = jadwalList.filter((j) =>
+    isScheduleApplicableOnDate(j, selectedDate)
+  );
   const [selectedJadwalId, setSelectedJadwalId] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterBatch, setFilterBatch] = useState<string>('ALL');
@@ -74,7 +79,17 @@ export const LaporanHarianAlfaPage: React.FC = () => {
     loadData();
   }, []);
 
-  const selectedJadwal = jadwalList.find((j) => j.jadwalId === selectedJadwalId);
+  useEffect(() => {
+    if (jadwalUntukTanggal.length === 0) {
+      if (selectedJadwalId) setSelectedJadwalId('');
+      return;
+    }
+    if (!jadwalUntukTanggal.some((j) => j.jadwalId === selectedJadwalId)) {
+      setSelectedJadwalId(jadwalUntukTanggal[0].jadwalId);
+    }
+  }, [selectedDate, jadwalList, selectedJadwalId]);
+
+  const selectedJadwal = jadwalUntukTanggal.find((j) => j.jadwalId === selectedJadwalId);
 
   // Ambil data absensi dan izin untuk tanggal dan jadwal terpilih
   const absensiHariIni = absensiList.filter(
@@ -215,7 +230,7 @@ export const LaporanHarianAlfaPage: React.FC = () => {
               onChange={(e) => setSelectedJadwalId(e.target.value)}
               className="text-xs font-bold bg-transparent text-slate-700 focus:outline-none cursor-pointer"
             >
-              {jadwalList.map((j) => (
+              {jadwalUntukTanggal.map((j) => (
                 <option key={j.jadwalId} value={j.jadwalId}>
                   {j.namaKegiatan} ({j.jamMulai} - {j.jamSelesai} WIB)
                 </option>

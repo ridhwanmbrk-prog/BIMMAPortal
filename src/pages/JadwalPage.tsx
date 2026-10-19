@@ -9,6 +9,17 @@ import {
 import { JadwalKegiatan } from '../types';
 import { getItems, setItems, getCurrentUser, addAuditLog } from '../storage';
 
+const HARI_OPTIONS = [
+  { value: 1, label: 'Senin' },
+  { value: 2, label: 'Selasa' },
+  { value: 3, label: 'Rabu' },
+  { value: 4, label: 'Kamis' },
+  { value: 5, label: 'Jumat' },
+  { value: 6, label: 'Sabtu' },
+  { value: 0, label: 'Minggu' },
+] as const;
+const SEMUA_HARI = HARI_OPTIONS.map((hari) => hari.value);
+
 export const JadwalPage: React.FC = () => {
   const [jadwalList, setJadwalList] = useState<JadwalKegiatan[]>([]);
 
@@ -31,6 +42,7 @@ export const JadwalPage: React.FC = () => {
   const [toleransiAkhir, setToleransiAkhir] = useState(15);
   const [keterangan, setKeterangan] = useState('');
   const [statusAktif, setStatusAktif] = useState(true);
+  const [hariPelaksanaan, setHariPelaksanaan] = useState<number[]>([...SEMUA_HARI]);
 
   const currentUser = getCurrentUser();
   const isAdmin = currentUser?.role === 'ADMIN';
@@ -53,6 +65,7 @@ export const JadwalPage: React.FC = () => {
     setToleransiAkhir(15);
     setKeterangan('');
     setStatusAktif(true);
+    setHariPelaksanaan([...SEMUA_HARI]);
     setModalOpen(true);
   };
 
@@ -66,6 +79,11 @@ export const JadwalPage: React.FC = () => {
     setToleransiAkhir(j.toleransiTutupAkhir || 15);
     setKeterangan(j.keterangan || '');
     setStatusAktif(j.statusAktif);
+    setHariPelaksanaan(
+      Array.isArray(j.hariPelaksanaan) && j.hariPelaksanaan.length
+        ? [...j.hariPelaksanaan]
+        : [...SEMUA_HARI],
+    );
     setModalOpen(true);
   };
 
@@ -94,6 +112,10 @@ export const JadwalPage: React.FC = () => {
     e.preventDefault();
     if (!isAdmin) return;
     if (!namaKegiatan.trim()) return;
+    if (hariPelaksanaan.length === 0) {
+      window.alert('Pilih minimal satu hari pelaksanaan.');
+      return;
+    }
 
     let updated: JadwalKegiatan[];
     if (editingJadwal) {
@@ -107,6 +129,7 @@ export const JadwalPage: React.FC = () => {
               toleransiBukaAwal: Number(toleransiAwal),
               toleransiTutupAkhir: Number(toleransiAkhir),
               statusAktif,
+              hariPelaksanaan: [...hariPelaksanaan],
               keterangan,
             }
           : j
@@ -122,6 +145,7 @@ export const JadwalPage: React.FC = () => {
         toleransiTutupAkhir: Number(toleransiAkhir),
         wajib: true,
         statusAktif: true,
+        hariPelaksanaan: [...hariPelaksanaan],
         keterangan,
       };
       updated = [...jadwalList, newJadwal];
@@ -184,6 +208,7 @@ export const JadwalPage: React.FC = () => {
                 <th className="p-3 pl-4 sm:pl-5">ID</th>
                 <th className="p-3">Nama Kegiatan</th>
                 <th className="p-3">Jam (WIB)</th>
+                <th className="p-3">Hari Pelaksanaan</th>
                 <th className="p-3">Rentang Scan Dibuka</th>
                 <th className="p-3">Keterangan</th>
                 <th className="p-3">Aksi</th>
@@ -193,7 +218,7 @@ export const JadwalPage: React.FC = () => {
             <tbody className="divide-y divide-emerald-50 font-medium">
               {jadwalList.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-8 text-center text-slate-400 font-bold">
+                  <td colSpan={8} className="p-8 text-center text-slate-400 font-bold">
                     Belum ada jadwal kegiatan.
                   </td>
                 </tr>
@@ -221,6 +246,12 @@ export const JadwalPage: React.FC = () => {
                       </td>
                       <td className="p-3 font-mono font-bold text-slate-800">
                         {j.jamMulai} - {j.jamSelesai}
+                      </td>
+                      <td className="p-3 text-slate-600">
+                        {!j.hariPelaksanaan || j.hariPelaksanaan.length === 0 || j.hariPelaksanaan.length === 7
+                          ? 'Setiap hari'
+                          : HARI_OPTIONS.filter((hari) => j.hariPelaksanaan?.includes(hari.value))
+                              .map((hari) => hari.label).join(', ')}
                       </td>
                       <td className="p-3">
                         <span className="bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-lg text-[10px] sm:text-[11px] font-mono font-bold border border-emerald-200/50">
@@ -349,6 +380,30 @@ export const JadwalPage: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-slate-600 mb-1">Hari Pelaksanaan *</label>
+                <div className="grid grid-cols-4 gap-2 rounded-xl bg-[#f4f8f5] border border-emerald-100 p-3">
+                  {HARI_OPTIONS.map((hari) => (
+                    <label key={hari.value} className="flex items-center gap-1.5 text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={hariPelaksanaan.includes(hari.value)}
+                        onChange={() => setHariPelaksanaan((prev) =>
+                          prev.includes(hari.value)
+                            ? prev.filter((value) => value !== hari.value)
+                            : [...prev, hari.value].sort((a, b) => a - b)
+                        )}
+                        className="rounded text-emerald-600"
+                      />
+                      <span>{hari.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Jadwal lama tanpa pengaturan hari dianggap berlaku setiap hari.
+                </p>
+              </div>
+
                 <div>
                   <label className="block text-slate-600 mb-1">Toleransi Buka Awal (Menit)</label>
                   <input

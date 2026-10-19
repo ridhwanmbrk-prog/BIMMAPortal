@@ -1,3 +1,5 @@
+import { getBusinessDateString, getBusinessTimeMinutes } from './utils/date';
+import { isScheduleApplicableOnDate } from './utils/schedule';
 // Storage, API synchronization, QR Code creation, and Schedule Time Window Validation
 
 import {
@@ -399,7 +401,13 @@ export function isWithinScheduleTime(jadwal: JadwalKegiatan): { valid: boolean; 
   }
 
   const now = new Date();
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  if (!isScheduleApplicableOnDate(jadwal, getBusinessDateString(now))) {
+    return {
+      valid: false,
+      reason: `Kegiatan ${jadwal.namaKegiatan} tidak dijadwalkan untuk hari ini.`,
+    };
+  }
+  const nowMinutes = getBusinessTimeMinutes(now);
 
   const [startH, startM] = jadwal.jamMulai.split(':').map(Number);
   const [endH, endM] = jadwal.jamSelesai.split(':').map(Number);
@@ -437,7 +445,7 @@ export function evaluateBatchStatus(
   if (!batch || !batch.tanggalMulai) {
     return 'BELUM_AKTIF';
   }
-  const today = referenceDate || new Date().toISOString().split('T')[0];
+  const today = referenceDate || getBusinessDateString();
 
   if (today < batch.tanggalMulai) {
     return 'BELUM_AKTIF';
@@ -453,7 +461,7 @@ export function getActiveBatchToday(batches?: Batch[], referenceDate?: string): 
   if (!bList || bList.length === 0) {
     return undefined;
   }
-  const today = referenceDate || new Date().toISOString().split('T')[0];
+  const today = referenceDate || getBusinessDateString();
 
   // 1. Cek apakah ada batch yang strictly aktif hari ini
   const strictlyActive = bList.find(
@@ -486,7 +494,7 @@ export function getBatchStatusInfo(batch?: Batch | null, referenceDate?: string)
       keteranganTenggat: 'Belum ada batch kegiatan terdaftar',
     };
   }
-  const today = referenceDate || new Date().toISOString().split('T')[0];
+  const today = referenceDate || getBusinessDateString();
   const evalStatus = evaluateBatchStatus(batch, today);
 
   if (evalStatus === 'BELUM_AKTIF') {
@@ -521,7 +529,7 @@ export function getBatchStatusInfo(batch?: Batch | null, referenceDate?: string)
 
 // SINKRONISASI OTOMATIS DATABASE DI LATAR BELAKANG
 export function syncDatabaseState(referenceDate?: string): void {
-  const today = referenceDate || new Date().toISOString().split('T')[0];
+  const today = referenceDate || getBusinessDateString();
   const nowIso = new Date().toISOString();
 
   // 1. Sinkronisasi status batch sesuai tanggal hari ini
@@ -972,7 +980,7 @@ export async function processQrScan(
   }
 
   // ANTI-DUPLIKAT MUTLAK: 1 santri hanya boleh 1x absen untuk 1 kegiatan di hari yang sama
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getBusinessDateString();
   const existing = absensiList.find(
     (a) =>
       a.tanggal === todayStr &&
@@ -995,13 +1003,13 @@ export async function processQrScan(
   const now = new Date();
   const [startH, startM] = targetJadwal.jamMulai.split(':').map(Number);
   const startMinutes = startH * 60 + startM;
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const nowMinutes = getBusinessTimeMinutes(now);
 
   let keteranganWaktu: 'TEPAT_WAKTU' | 'TERLAMBAT' = 'TEPAT_WAKTU';
   let menitKeterlambatan = 0;
-  let catatanWaktu = `Hadir tepat waktu sebelum batas jadwal (${targetJadwal.jamMulai} WIB)`;
+  let catatanWaktu = `Hadir tepat waktu (toleransi sampai 15 menit setelah jam mulai ${targetJadwal.jamMulai} WIB)`;
 
-  if (nowMinutes > startMinutes) {
+  if (nowMinutes > startMinutes + 15) {
     keteranganWaktu = 'TERLAMBAT';
     menitKeterlambatan = nowMinutes - startMinutes;
     catatanWaktu = `Terlambat ${menitKeterlambatan} menit melebihi jam mulai kegiatan (${targetJadwal.jamMulai} WIB)`;
@@ -1127,7 +1135,9 @@ export function getKegiatanSedangBerlangsung(customList?: JadwalKegiatan[]): {
   keterangan: string;
 } {
   const list = customList || getItems<JadwalKegiatan>('JADWAL');
-  const aktifList = list.filter((j) => j.statusAktif);
+  const aktifList = list.filter(
+    (j) => j.statusAktif && isScheduleApplicableOnDate(j, getBusinessDateString()),
+  );
 
   if (aktifList.length === 0) {
     return { kegiatan: null, status: 'SELESAI', keterangan: 'Tidak ada kegiatan aktif' };
@@ -1147,7 +1157,7 @@ export function getKegiatanSedangBerlangsung(customList?: JadwalKegiatan[]): {
 
   // 2. Jika tidak ada yang pas sedang berlangsung, cari jadwal terdekat hari ini
   const now = new Date();
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const nowMinutes = getBusinessTimeMinutes(now);
 
   let closestNext: JadwalKegiatan | null = null;
   let minDiffNext = Infinity;

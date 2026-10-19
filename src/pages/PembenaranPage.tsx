@@ -1,3 +1,4 @@
+import { getBusinessDateString } from '../utils/date';
 import React, { useState, useEffect } from 'react';
 import {
   FileQuestion,
@@ -22,7 +23,7 @@ export const PembenaranPage: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedPesertaId, setSelectedPesertaId] = useState('');
   const [selectedJadwalId, setSelectedJadwalId] = useState('');
-  const [tanggalKejadian, setTanggalKejadian] = useState(new Date().toISOString().split('T')[0]);
+  const [tanggalKejadian, setTanggalKejadian] = useState(getBusinessDateString());
   const [alasanPembenaran, setAlasanPembenaran] = useState('');
 
   const currentUser = getCurrentUser();

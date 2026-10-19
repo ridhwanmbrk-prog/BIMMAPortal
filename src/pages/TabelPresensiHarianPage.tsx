@@ -1,3 +1,5 @@
+import { getBusinessDateString } from '../utils/date';
+import { isScheduleApplicableOnDate } from '../utils/schedule';
 import React, { useState, useEffect } from 'react';
 import {
   TableProperties,
@@ -16,9 +18,9 @@ import {
   AlertTriangle,
   FileText,
 } from 'lucide-react';
-import { Peserta, Absensi, JadwalKegiatan, Izin, Batch } from '../types';
+import { Peserta, Absensi, JadwalKegiatan, Izin, Batch, Pembenaran, UserAccount } from '../types';
 import { getItems, getConfig } from '../storage';
-import { pushAbsensiToSheet, initRekapFormulasInSheet } from '../sheetApi';
+import { pushAllDataToSheet, initRekapFormulasInSheet } from '../sheetApi';
 import { exportAttendancePdf } from '../utils/exportAttendancePdf';
 
 type TabView = 'matriks' | 'per-orang' | 'harian-kegiatan' | 'batch' | 'mingguan';
@@ -31,8 +33,11 @@ export const TabelPresensiHarianPage: React.FC = () => {
   const [izinList, setIzinList] = useState<Izin[]>([]);
   const [batchList, setBatchList] = useState<Batch[]>([]);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getBusinessDateString();
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const jadwalUntukTanggal = jadwalList.filter((j) =>
+    isScheduleApplicableOnDate(j, selectedDate)
+  );
   const [filterJurusan, setFilterJurusan] = useState<string>('ALL');
   const [filterBatch, setFilterBatch] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
@@ -117,8 +122,8 @@ export const TabelPresensiHarianPage: React.FC = () => {
       }
       if (record.statusAbsensi === 'ALPA') {
         return {
-          code: 'A',
-          label: 'Alpa (Tidak Hadir)',
+          code: 'X',
+          label: 'Alfa (Tidak Hadir)',
           color: 'bg-rose-100 text-rose-800 font-bold',
         };
       }
@@ -140,10 +145,24 @@ export const TabelPresensiHarianPage: React.FC = () => {
         }
         return { code: 'I', label: 'Izin Disetujui', color: 'bg-amber-100 text-amber-800 font-bold' };
       }
-      return { code: '?', label: 'Izin Perlu Konfirmasi', color: 'bg-emerald-100 text-emerald-800 font-bold border border-emerald-400' };
+      return { code: '?', label: 'Izin Perlu Konfirmasi', color: 'bg-amber-100 text-amber-900 font-bold border border-amber-300' };
     }
 
-    return { code: '-', label: 'Belum Ada Presensi', color: 'text-slate-300' };
+    const confirmationDeadline = new Date(`${selectedDate}T22:00:00+07:00`);
+
+    if (Date.now() >= confirmationDeadline.getTime()) {
+      return {
+        code: 'X',
+        label: 'Alfa: batas konfirmasi pukul 22.00 WIB telah lewat',
+        color: 'bg-rose-100 text-rose-800 font-bold',
+      };
+    }
+
+    return {
+      code: '?',
+      label: 'Belum ada presensi — perlu konfirmasi',
+      color: 'bg-amber-100 text-amber-900 font-bold border border-amber-300',
+    };
   };
 
   // Evaluasi 1 Hari Penuh: menyelesaikan seluruh rangkaian kegiatan (Pagi & Malam)
@@ -154,7 +173,7 @@ export const TabelPresensiHarianPage: React.FC = () => {
     let izinCount = 0;
     let needConfirm = false;
 
-    jadwalList.forEach((j) => {
+    jadwalUntukTanggal.forEach((j) => {
       const res = getCellStatus(santri, j);
       if (res.code === 'H' || res.code === 'H*') {
         hadirCount++;
@@ -167,7 +186,7 @@ export const TabelPresensiHarianPage: React.FC = () => {
       }
     });
 
-    const isFullDayComplete = hadirCount === jadwalList.length && jadwalList.length > 0;
+    const isFullDayComplete = hadirCount === jadwalUntukTanggal.length && jadwalUntukTanggal.length > 0;
 
     let badge = {
       label: 'Kurang Absen',
@@ -198,7 +217,7 @@ export const TabelPresensiHarianPage: React.FC = () => {
       };
     } else if (hadirCount > 0) {
       badge = {
-        label: `${hadirCount}/${jadwalList.length} Kegiatan`,
+        label: `${hadirCount}/${jadwalUntukTanggal.length} Kegiatan`,
         color: 'bg-emerald-100 text-emerald-800',
       };
     }
@@ -246,7 +265,8 @@ export const TabelPresensiHarianPage: React.FC = () => {
   }[] = [];
 
   distinctDates.forEach((tgl) => {
-    jadwalList.forEach((j) => {
+    jadwalList.filter((j) => isScheduleApplicableOnDate(j, tgl))
+      .forEach((j) => {
       const dayRecs = absensiList.filter(
         (a) => a.tanggal === tgl && (a.jadwalId === j.jadwalId || a.namaKegiatan.toLowerCase() === j.namaKegiatan.toLowerCase())
       );
@@ -275,7 +295,9 @@ export const TabelPresensiHarianPage: React.FC = () => {
   });
 
   // DATA REKAPAN 3: Rekapan Batch
-  const batchNames = ['Batch 1', 'Batch 2', 'Batch 3'];
+  const batchNames = Array.from(
+    new Set(pesertaList.map((p) => p.batchId))
+  ).sort();
   const batchRows = batchNames.map((bName) => {
     const santriInBatch = pesertaList.filter((p) => p.batchId === bName);
     const santriIds = new Set(santriInBatch.map((p) => p.pesertaId));
@@ -290,7 +312,9 @@ export const TabelPresensiHarianPage: React.FC = () => {
     const pct = totalSesi > 0 ? Math.round((totalHadir / totalSesi) * 100) : 0;
 
     return {
-      batchName: bName,
+      batchName: batchList.find(
+        (b) => b.batchId === bName || b.namaBatch === bName
+      )?.namaBatch || bName,
       jumlahSantri: santriInBatch.length,
       tepatWaktu,
       terlambat,
@@ -310,13 +334,29 @@ export const TabelPresensiHarianPage: React.FC = () => {
     }
 
     setSyncLoading(true);
-    const res = await pushAbsensiToSheet(config.backendUrl, absensiList);
+    const payload = {
+      tanggalLaporan: selectedDate,
+      pengguna: getItems<UserAccount>('USERS_ACCOUNTS').map((user) => ({
+        id: user.id,
+        gender: user.gender,
+        role: user.role,
+        namaLengkap: user.namaLengkap,
+        statusAktif: user.statusAktif,
+      })),
+      peserta: getItems<Peserta>('PESERTA'),
+      absensi: getItems<Absensi>('ABSENSI'),
+      jadwal: getItems<JadwalKegiatan>('JADWAL'),
+      batch: getItems<Batch>('BATCH'),
+      izin: getItems<Izin>('IZIN'),
+      pembenaran: getItems<Pembenaran>('PEMBENARAN'),
+    };
+    const res = await pushAllDataToSheet(config.backendUrl, payload);
     setSyncLoading(false);
 
     if (res.success) {
       setNotification({
         type: 'success',
-        message: res.message || 'Presensi dan catatan waktu berhasil disinkronkan ke Google Sheet!',
+        message: res.message || 'Seluruh data BIMMA berhasil disinkronkan ke Google Spreadsheet!',
       });
     } else {
       setNotification({
@@ -481,9 +521,16 @@ export const TabelPresensiHarianPage: React.FC = () => {
               className="bg-transparent font-semibold text-slate-700 focus:outline-none cursor-pointer text-xs"
             >
               <option value="ALL">Semua Batch</option>
-              <option value="Batch 1">Batch 1</option>
-              <option value="Batch 2">Batch 2</option>
-              <option value="Batch 3">Batch 3</option>
+              {Array.from(new Set(pesertaList.map((p) => p.batchId))).sort().map((batchId) => {
+                const batch = batchList.find(
+                  (b) => b.batchId === batchId || b.namaBatch === batchId
+                );
+                return (
+                  <option key={batchId} value={batchId}>
+                    {batch?.namaBatch || batchId}
+                  </option>
+                );
+              })}
             </select>
           </div>
 
@@ -521,16 +568,16 @@ export const TabelPresensiHarianPage: React.FC = () => {
         {activeTab === 'matriks' && (
           <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3 text-[10px] text-slate-600 font-semibold w-full sm:w-auto pt-2 sm:pt-0 sm:border-l sm:border-slate-200 sm:pl-3">
             <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" /> H = Tepat Waktu
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" /> ✓ Hadir
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" /> H* = Terlambat
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shrink-0" /> X Alfa
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0" /> I = Izin
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" /> ? Perlu konfirmasi
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shrink-0" /> A = Alpa
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0" /> I Izin
             </span>
           </div>
         )}
@@ -548,7 +595,7 @@ export const TabelPresensiHarianPage: React.FC = () => {
                   <th className="p-3 pl-5">NIM & Mahasantri</th>
                   <th className="p-3">Prodi</th>
                   <th className="p-3">Batch</th>
-                  {jadwalList.map((j) => (
+                  {jadwalUntukTanggal.map((j) => (
                     <th key={j.jadwalId} className="p-3 text-center">
                       <div>{j.namaKegiatan}</div>
                       <span className="text-[10px] text-emerald-700/80 font-normal">
@@ -562,7 +609,7 @@ export const TabelPresensiHarianPage: React.FC = () => {
               <tbody className="divide-y divide-emerald-50 text-slate-700">
                 {filteredPeserta.length === 0 ? (
                   <tr>
-                    <td colSpan={4 + jadwalList.length} className="p-8 text-center text-slate-400 italic">
+                    <td colSpan={4 + jadwalUntukTanggal.length} className="p-8 text-center text-slate-400 italic">
                       Tidak ada data mahasantri ditemukan.
                     </td>
                   </tr>
@@ -578,7 +625,7 @@ export const TabelPresensiHarianPage: React.FC = () => {
                         <td className="p-3 text-[11px] font-semibold text-slate-600">{santri.programStudi}</td>
                         <td className="p-3 text-[11px] font-semibold text-emerald-800">{santri.batchId}</td>
 
-                        {jadwalList.map((j) => {
+                        {jadwalUntukTanggal.map((j) => {
                           const cell = getCellStatus(santri, j);
                           return (
                             <td key={j.jadwalId} className="p-3 text-center">
@@ -586,13 +633,7 @@ export const TabelPresensiHarianPage: React.FC = () => {
                                 className={`px-2 py-1 rounded-lg text-[10px] inline-block ${cell.color}`}
                                 title={cell.label}
                               >
-                                {cell.code === 'H*' ? (
-                                  <span>H* ({cell.lateMinutes}m)</span>
-                                ) : cell.code === 'H' ? (
-                                  <span>H ({cell.time})</span>
-                                ) : (
-                                  cell.code
-                                )}
+                                {cell.code === 'H*' || cell.code === 'H' ? '✓' : cell.code}
                               </span>
                             </td>
                           );
@@ -831,7 +872,7 @@ export const TabelPresensiHarianPage: React.FC = () => {
                 onClick={handleInitFormulas}
                 className="px-4 py-2 rounded-xl bg-emerald-800 text-white font-bold text-xs shadow-md hover:bg-emerald-900 transition cursor-pointer"
               >
-                Sinkronkan Tab REKAP_MINGGUAN ke Google Sheets
+                Siapkan Formula Rekap di Google Sheets
               </button>
             </div>
           </div>
