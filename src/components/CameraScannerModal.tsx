@@ -29,6 +29,7 @@ import {
   isWithinScheduleTime,
   verifyKedatanganSantri,
   updateAbsensiAlasan,
+  getCurrentUser,
 } from '../storage';
 
 interface ToastState {
@@ -111,13 +112,30 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
 
     setScanMode(initialMode);
 
-    const musyrifs = getItems<Musyrif>('MUSYRIF').filter((m) => m.status);
+    const currentUser = getCurrentUser();
+    const restrictedGender =
+      currentUser?.role === 'PETUGAS'
+        ? (currentUser.gender === 'AKHWAT' ? 'AKHWAT' : 'IKHWAN')
+        : null;
+
+    const musyrifs = getItems<Musyrif>('MUSYRIF').filter(
+      (m) => m.status && (!restrictedGender || m.gender === restrictedGender),
+    );
     setMusyrifList(musyrifs);
 
-    const activeM = getActiveMusyrif();
+    // Petugas aktif yang tersimpan sebelumnya tidak boleh melewati filter gender.
+    const storedActiveM = getActiveMusyrif();
+    const activeM =
+      storedActiveM && musyrifs.some((m) => m.id === storedActiveM.id)
+        ? storedActiveM
+        : null;
+
     if (activeM) {
       setSelectedMusyrifId(activeM.id);
       setSelectedMusyrifState(activeM);
+    } else {
+      setSelectedMusyrifId('');
+      setSelectedMusyrifState(null);
     }
 
     // Ambil jadwal yang statusAktif = true
@@ -288,6 +306,27 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
     const cleanText = decodedText.trim();
     if (!cleanText) return;
 
+    const selectedPetugas =
+      musyrifList.find((m) => m.id === selectedMusyrifId) || null;
+
+    if (!selectedPetugas) {
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+      setToast({
+        show: true,
+        type: 'warning',
+        title: 'PILIH PETUGAS YANG SESUAI',
+        message: 'Pilih nama petugas dari daftar akun yang sesuai sebelum melakukan scan.',
+        waktu: new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }),
+      });
+      toastTimeoutRef.current = setTimeout(() => {
+        setToast((prev) => ({ ...prev, show: false }));
+      }, 4000);
+      return;
+    }
+
+    // Pastikan proses absensi memakai petugas yang lolos filter akun login.
+    setActiveMusyrif(selectedPetugas);
+
     const now = Date.now();
     const lastScanTime = scanThrottleRef.current[cleanText] || 0;
     if (now - lastScanTime < 2200) {
@@ -305,8 +344,8 @@ export const CameraScannerModal: React.FC<CameraModalProps> = ({
         cleanText.toUpperCase().includes('BIMMA/IZN');
 
       if (isSuratQr) {
-        const activeM = getActiveMusyrif();
-        const petugasNama = activeM?.nama || selectedMusyrif?.nama || 'Petugas Musyrif';
+        const petugasNama =
+          selectedPetugas.nama || selectedMusyrif?.nama || 'Petugas Musyrif';
         const verifyRes = verifyKedatanganSantri(
           cleanText,
           petugasNama,
