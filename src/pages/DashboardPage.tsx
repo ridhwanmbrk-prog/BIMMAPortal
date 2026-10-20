@@ -185,7 +185,11 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
     const i = getItems<Izin>('IZIN');
     const pb = getItems<Pembenaran>('PEMBENARAN');
     const a = getItems<Absensi>('ABSENSI');
-    const m = getItems<Musyrif>('MUSYRIF');
+    const m = getItems<Musyrif>('MUSYRIF').filter(
+      (item) =>
+        user?.role !== 'PETUGAS' ||
+        item.gender === (user.gender === 'AKHWAT' ? 'AKHWAT' : 'IKHWAN'),
+    );
     const b = getItems<Batch>('BATCH');
 
     setPesertaList(p);
@@ -693,7 +697,11 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
       <div className="flex items-center justify-between mb-3.5 sm:mb-4">
         <div className="flex items-center gap-2">
           <Users className="w-4 h-4 text-[#059669]" />
-          <h3 className="font-extrabold text-sm text-slate-800">Petugas Musyrif Piket</h3>
+          <h3 className="font-extrabold text-sm text-slate-800">
+            {user?.role === 'PETUGAS'
+              ? (user.gender === 'AKHWAT' ? 'Petugas Musyrifah Piket' : 'Petugas Musyrif Piket')
+              : 'Petugas Musyrif & Musyrifah Piket'}
+          </h3>
         </div>
         {isAdmin && (
           <button
