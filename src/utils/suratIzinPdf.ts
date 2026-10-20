@@ -6,6 +6,7 @@ const TEMPLATE_URL = '/templates/surat_izin_template.pdf';
 
 const BLACK = rgb(0, 0, 0);
 const GREEN = rgb(6 / 255, 78 / 255, 59 / 255);
+const WHITE = rgb(1, 1, 1);
 
 /**
  * Posisi template diukur dari sisi atas halaman dalam satuan PDF point.
