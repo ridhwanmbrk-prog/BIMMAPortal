@@ -6,7 +6,6 @@ import {
   Eye,
   EyeOff,
   ArrowRight,
-  Shield,
   Check,
   Camera,
 } from 'lucide-react';
@@ -193,42 +192,8 @@ export const LoginPage: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   };
 
   return (
-    <div className="min-h-screen bg-[#edf3ef] flex flex-col justify-between items-center p-3 sm:p-6 lg:p-8 font-sans select-none relative overflow-x-hidden">
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[700px] h-[280px] bg-gradient-to-b from-[#10b981]/15 to-transparent blur-3xl pointer-events-none" />
-
-      <header className="w-full max-w-md flex items-center justify-between relative z-10 pt-2 sm:pt-4">
-        <div className="flex items-center gap-2.5">
-          <UnisaLogo size={36} />
-          <div>
-            <h2 className="text-xs sm:text-sm font-black text-slate-800 leading-none">
-              BIMMA Portal
-            </h2>
-            <p className="text-[10px] text-emerald-800 font-bold uppercase tracking-wider mt-0.5">
-              Bimbingan Mahasiswa • Pesantren Mahasiswa UNISA
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/80 border border-emerald-200/60 shadow-xs text-[10px] font-bold text-emerald-900">
-          <Shield className="w-3 h-3 text-emerald-700" />
-          <span>Sistem Resmi</span>
-        </div>
-      </header>
-
-      <main className="w-full max-w-md bg-[#f4f8f5] rounded-[28px] sm:rounded-[36px] shadow-[14px_18px_36px_rgba(160,190,175,0.45),-10px_-10px_28px_rgba(255,255,255,0.95)] border border-white/90 p-5 sm:p-7 flex flex-col items-center my-auto relative z-10">
-        <div className="p-1 rounded-[24px] bg-white shadow-[6px_6px_14px_rgba(5,150,105,0.25),-4px_-4px_10px_rgba(255,255,255,0.8)] border-2 border-emerald-500/20 flex items-center justify-center">
-          <UnisaLogo size={56} />
-        </div>
-
-        <div className="text-center mt-3 mb-5">
-          <h1 className="text-lg sm:text-xl font-black tracking-tight text-slate-800">
-            Masuk ke Sistem BIMMA
-          </h1>
-          <p className="text-[11px] sm:text-xs font-semibold text-slate-500 mt-1">
-            Admin dan petugas menggunakan akun. Mahasantri menggunakan QR kartu.
-          </p>
-        </div>
-
+    <div className="bimma-login-page font-sans relative">
+      <main className="bimma-login-card relative z-10 w-full max-w-[520px] flex flex-col items-center">
         {error && (
           <div className="w-full mb-4 p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 text-xs text-center font-bold">
             {error}
@@ -398,7 +363,7 @@ export const LoginPage: React.FC<LoginProps> = ({ onLoginSuccess }) => {
         </div>
       )}
 
-      <footer className="w-full max-w-md relative z-10 pt-4 pb-2 border-t border-emerald-900/10 text-left">
+      <footer className="bimma-login-footer relative z-10 text-left">
         <div className="flex items-start gap-3">
           <div className="w-9 h-9 rounded-xl bg-white p-1.5 border border-emerald-200/80 shrink-0 flex items-center justify-center">
             <UnisaLogo size={24} />

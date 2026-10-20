@@ -135,3 +135,130 @@
 .dark ::-webkit-scrollbar-thumb {
   background: rgba(16, 185, 129, 0.4);
 }
+
+
+/* =========================================================
+   BIMMA PORTAL — HALAMAN LOGIN RESPONSIF
+   Background desktop dan mobile berada di public/images.
+   ========================================================= */
+
+.bimma-login-page {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, min(42vw, 540px));
+  grid-template-rows: minmax(0, 1fr) auto;
+  column-gap: clamp(24px, 5vw, 80px);
+  min-height: 100vh;
+  min-height: 100svh;
+  width: 100%;
+  padding: clamp(24px, 4vh, 48px)
+    clamp(24px, 6vw, 96px)
+    24px
+    clamp(24px, 4vw, 64px);
+  background-color: #e9f8f1;
+  background-image: url('/images/LOGIN-BG-BIMMA-desktop.jpg');
+  background-repeat: no-repeat;
+  background-position: center center;
+  background-size: cover;
+  overflow-x: hidden;
+}
+
+.bimma-login-card {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  justify-self: stretch;
+  width: 100%;
+  max-width: 540px;
+  margin: 0;
+  padding: clamp(24px, 2.4vw, 36px);
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.91);
+  box-shadow:
+    0 24px 60px rgba(0, 83, 57, 0.13),
+    0 4px 16px rgba(0, 83, 57, 0.06);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.bimma-login-footer {
+  grid-column: 2;
+  grid-row: 2;
+  justify-self: stretch;
+  width: 100%;
+  max-width: 540px;
+  box-sizing: border-box;
+  padding-top: 14px;
+  padding-bottom: 4px;
+  border-top: 1px solid rgba(0, 91, 62, 0.16);
+}
+
+@media (max-width: 767px) {
+  .bimma-login-page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    justify-items: center;
+    align-content: start;
+    gap: 14px;
+    min-height: 100vh;
+    min-height: 100svh;
+    padding:
+      clamp(260px, 35vh, 380px)
+      16px
+      20px;
+    background-color: #e9f8f1;
+    background-image: url('/images/LOGIN-BG-BIMMA-mobile.jpg');
+    background-position: top center;
+    background-size: 100% auto;
+    background-repeat: no-repeat;
+  }
+
+  .bimma-login-card {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: start;
+    justify-self: center;
+    width: 100%;
+    max-width: 520px;
+    padding: 22px 20px;
+    border-radius: 26px;
+  }
+
+  .bimma-login-footer {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: center;
+    width: 100%;
+    max-width: 520px;
+    padding-top: 12px;
+    padding-bottom: 4px;
+    background: rgba(255, 255, 255, 0.28);
+    border-radius: 0 0 12px 12px;
+  }
+}
+
+@media (max-width: 380px) {
+  .bimma-login-page {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .bimma-login-card {
+    padding: 18px 15px;
+    border-radius: 22px;
+  }
+}
+
+@media (max-height: 650px) and (min-width: 768px) {
+  .bimma-login-page {
+    padding-top: 18px;
+    padding-bottom: 14px;
+  }
+
+  .bimma-login-card {
+    padding-top: 20px;
+    padding-bottom: 20px;
+  }
+}
