@@ -27,7 +27,13 @@ export const PetugasPage: React.FC = () => {
   const [musyrifList, setMusyrifList] = useState<Musyrif[]>([]);
   const [activeMusyrif, setActiveMusyrifState] = useState<Musyrif | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterGender, setFilterGender] = useState<'ALL' | 'IKHWAN' | 'AKHWAT'>('ALL');
+  const [filterGender, setFilterGender] = useState<'ALL' | 'IKHWAN' | 'AKHWAT'>(() => {
+    const user = getCurrentUser();
+    if (user?.role === 'PETUGAS') {
+      return user.gender === 'AKHWAT' ? 'AKHWAT' : 'IKHWAN';
+    }
+    return 'ALL';
+  });
 
   // Modal State
   const [modalOpen, setModalOpen] = useState(false);
@@ -43,6 +49,19 @@ export const PetugasPage: React.FC = () => {
   const [deletingPetugasId, setDeletingPetugasId] = useState<string | null>(null);
 
   const currentUser = getCurrentUser();
+  const isAdmin = currentUser?.role === 'ADMIN';
+  const restrictedGender =
+    currentUser?.role === 'PETUGAS'
+      ? (currentUser.gender === 'AKHWAT' ? 'AKHWAT' : 'IKHWAN')
+      : null;
+  const genderOptions: Array<'ALL' | 'IKHWAN' | 'AKHWAT'> = isAdmin
+    ? ['ALL', 'IKHWAN', 'AKHWAT']
+    : [restrictedGender || 'IKHWAN'];
+  const visibleActiveMusyrif =
+    activeMusyrif &&
+    (!restrictedGender || activeMusyrif.gender === restrictedGender)
+      ? activeMusyrif
+      : null;
 
   const loadData = () => {
     setMusyrifList(getItems<Musyrif>('MUSYRIF'));
@@ -162,14 +181,22 @@ export const PetugasPage: React.FC = () => {
     });
   };
 
-  const filtered = musyrifList.filter((m) => {
-    const matchQuery = m.nama.toLowerCase().includes(searchQuery.toLowerCase()) || m.id.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchGender = filterGender === 'ALL' || m.gender === filterGender;
+  const visibleMusyrifList = restrictedGender
+    ? musyrifList.filter((m) => m.gender === restrictedGender)
+    : musyrifList;
+
+  const effectiveFilterGender = restrictedGender || filterGender;
+  const filtered = visibleMusyrifList.filter((m) => {
+    const matchQuery =
+      m.nama.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      m.id.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchGender =
+      effectiveFilterGender === 'ALL' || m.gender === effectiveFilterGender;
     return matchQuery && matchGender;
   });
 
-  const ikhwanCount = musyrifList.filter((m) => m.gender === 'IKHWAN').length;
-  const akhwatCount = musyrifList.filter((m) => m.gender === 'AKHWAT').length;
+  const ikhwanCount = visibleMusyrifList.filter((m) => m.gender === 'IKHWAN').length;
+  const akhwatCount = visibleMusyrifList.filter((m) => m.gender === 'AKHWAT').length;
 
   return (
     <div className="space-y-4 sm:space-y-6 max-w-6xl mx-auto">
@@ -182,10 +209,10 @@ export const PetugasPage: React.FC = () => {
           <div>
             <p className="text-[10px] sm:text-[11px] font-bold text-emerald-200 uppercase tracking-wider">Petugas Piket Aktif Saat Ini</p>
             <h3 className="text-sm sm:text-base font-extrabold text-white">
-              {activeMusyrif ? activeMusyrif.nama : 'Belum Dipilih (Pilih Petugas Bertugas)'}
+              {visibleActiveMusyrif ? visibleActiveMusyrif.nama : 'Belum Dipilih (Pilih Petugas Bertugas)'}
             </h3>
             <p className="text-[10px] sm:text-[11px] text-emerald-100">
-              {activeMusyrif ? `Kategori: ${activeMusyrif.gender} • ID: ${activeMusyrif.id}` : 'Petugas ini yang akan otomatis tercatat pada log absensi santri'}
+              {visibleActiveMusyrif ? `Kategori: ${visibleActiveMusyrif.gender} • ID: ${visibleActiveMusyrif.id}` : 'Petugas ini yang akan otomatis tercatat pada log absensi santri'}
             </p>
           </div>
         </div>
@@ -196,7 +223,7 @@ export const PetugasPage: React.FC = () => {
         <div className="bg-white p-2.5 sm:p-4 rounded-xl sm:rounded-[22px] border border-slate-200/60 shadow-xs flex flex-col sm:flex-row items-center sm:justify-between text-center sm:text-left gap-1">
           <div>
             <p className="text-[10px] sm:text-[11px] font-bold text-slate-400">Total Petugas</p>
-            <p className="text-base sm:text-2xl font-black text-slate-800">{musyrifList.length}</p>
+            <p className="text-base sm:text-2xl font-black text-slate-800">{visibleMusyrifList.length}</p>
           </div>
           <div className="w-7 h-7 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
             <Users className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
@@ -250,7 +277,7 @@ export const PetugasPage: React.FC = () => {
 
         <div className="flex items-center gap-2 w-full sm:w-auto">
           <span className="text-xs font-bold text-slate-500">Gender:</span>
-          {(['ALL', 'IKHWAN', 'AKHWAT'] as const).map((g) => (
+          {genderOptions.map((g) => (
             <button
               key={g}
               onClick={() => setFilterGender(g)}
