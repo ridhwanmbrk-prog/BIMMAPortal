@@ -6,7 +6,6 @@ const TEMPLATE_URL = '/templates/surat_izin_template.pdf';
 
 const BLACK = rgb(0, 0, 0);
 const GREEN = rgb(6 / 255, 78 / 255, 59 / 255);
-const WHITE = rgb(1, 1, 1);
 
 /**
  * Posisi template diukur dari sisi atas halaman dalam satuan PDF point.
@@ -273,50 +272,6 @@ export async function generateSuratIzinPdf(
 
     const qrBytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
     const qrImage = await pdfDoc.embedPng(qrBytes);
-
-    // Kotak lembar paraf musyrif tetap ada di sebelah kiri tanda tangan.
-    const boxX = 56;
-    const boxTop = 626;
-    const boxWidth = 256;
-    const boxHeight = 92;
-    const boxColor = rgb(0.80, 0.84, 0.89);
-
-    page.drawRectangle({
-      x: boxX,
-      y: pageHeight - boxTop - boxHeight,
-      width: boxWidth,
-      height: boxHeight,
-      borderColor: boxColor,
-      borderWidth: 1.2,
-    });
-
-    drawTextAtTop(
-      page, bold, 'LEMBAR PARAF KEDATANGAN MUSYRIF PIKET:',
-      68, 641, 8.2, rgb(0.28, 0.34, 0.42),
-    );
-
-    drawTextAtTop(
-      page, regular, 'Tanggal & Jam Kedatangan :',
-      68, 661, 8.2, rgb(0.28, 0.34, 0.42),
-    );
-    drawTextAtTop(
-      page, regular, 'Nama Musyrif Penerima   :',
-      68, 678, 8.2, rgb(0.28, 0.34, 0.42),
-    );
-    drawTextAtTop(
-      page, regular, 'Tanda Tangan Penerima   :',
-      68, 695, 8.2, rgb(0.28, 0.34, 0.42),
-    );
-
-    // Garis isian pada kotak paraf.
-    for (const lineTop of [663, 680, 697]) {
-      page.drawLine({
-        start: { x: 174, y: pageHeight - lineTop },
-        end: { x: 298, y: pageHeight - lineTop },
-        thickness: 0.55,
-        color: boxColor,
-      });
-    }
 
     // Area kanan: tanggal dan QR saja.
     // Posisi X tanggal sejajar dengan sisi kiri nama Bu Dita pada template.
