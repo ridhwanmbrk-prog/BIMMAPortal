@@ -1,263 +1,373 @@
-import { jsPDF } from 'jspdf';
+import { PDFDocument, StandardFonts, rgb, type PDFFont } from 'pdf-lib';
 import QRCode from 'qrcode';
 import { Izin, Peserta } from '../types';
 
-export async function generateSuratIzinPdf(izin: Izin, santri: Peserta, petugasNama?: string): Promise<void> {
-  const doc = new jsPDF({
-    orientation: 'portrait',
-    unit: 'mm',
-    format: 'a4', // 210 x 297 mm
-  });
+const TEMPLATE_URL = '/templates/surat_izin_template.pdf';
 
-  // Generate QR Code data URL for the verification code
-  const qrContent = izin.kodeVerifikasi || `IZIN-${izin.izinId}-${santri.nim}`;
-  let qrDataUrl = '';
+const BLACK = rgb(0, 0, 0);
+const GREEN = rgb(6 / 255, 78 / 255, 59 / 255);
+const WHITE = rgb(1, 1, 1);
+
+/**
+ * Posisi template diukur dari sisi atas halaman dalam satuan PDF point.
+ * PDF A4 = 595.28 x 841.89 point.
+ */
+function drawTextAtTop(
+  page: ReturnType<PDFDocument['getPages']>[number],
+  font: PDFFont,
+  text: string,
+  x: number,
+  baselineFromTop: number,
+  size: number,
+  color = BLACK,
+): void {
+  page.drawText(text || '-', {
+    x,
+    y: page.getHeight() - baselineFromTop,
+    size,
+    font,
+    color,
+  });
+}
+
+function drawFitText(
+  page: ReturnType<PDFDocument['getPages']>[number],
+  font: PDFFont,
+  text: string,
+  x: number,
+  baselineFromTop: number,
+  maxWidth: number,
+  preferredSize = 9,
+  minSize = 6.5,
+  color = BLACK,
+): void {
+  let size = preferredSize;
+
+  while (size > minSize && font.widthOfTextAtSize(text, size) > maxWidth) {
+    size -= 0.25;
+  }
+
+  drawTextAtTop(page, font, text, x, baselineFromTop, size, color);
+}
+
+function drawCenteredFit(
+  page: ReturnType<PDFDocument['getPages']>[number],
+  font: PDFFont,
+  text: string,
+  baselineFromTop: number,
+  maxWidth: number,
+  preferredSize = 9,
+  minSize = 6.5,
+  color = BLACK,
+): void {
+  let size = preferredSize;
+
+  while (size > minSize && font.widthOfTextAtSize(text, size) > maxWidth) {
+    size -= 0.25;
+  }
+
+  const x = (page.getWidth() - font.widthOfTextAtSize(text, size)) / 2;
+
+  drawTextAtTop(page, font, text, x, baselineFromTop, size, color);
+}
+
+function formatDateTime(value: unknown): string {
+  const raw = String(value || '').trim();
+
+  if (!raw) return '-';
+
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+
+  return match ? `${match[1]} ${match[2]} WIB` : `${raw.replace('T', ' ')} WIB`;
+}
+
+function formatIndonesianDate(date: Date): string {
+  return new Intl.DateTimeFormat('id-ID', {
+    timeZone: 'Asia/Jakarta',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(date);
+}
+
+function formatBatch(value: unknown): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '-';
+
+  const match = raw.match(/(?:batch|b)\s*(\d+)/i) || raw.match(/(\d+)/);
+
+  return match ? `Batch ${Number(match[1])}` : raw;
+}
+
+function getJenisIzinLabel(jenisIzin: string): string {
+  switch (jenisIzin) {
+    case 'IZIN_PULANG':
+      return 'IZIN PULANG KE RUMAH / KELUARGA';
+    case 'SAKIT':
+      return 'IZIN SAKIT (KLINIK / RAWAT INAP)';
+    case 'KEPERLUAN_SYARI':
+      return "IZIN KEPERLUAN SYAR'I";
+    default:
+      return 'IZIN KHUSUS / DISPENSASI KAMPUS';
+  }
+}
+
+function safeFilename(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+export async function generateSuratIzinPdf(
+  izin: Izin,
+  santri: Peserta,
+  _petugasNama?: string,
+): Promise<void> {
+  if (izin.statusPersetujuan !== 'DISETUJUI') {
+    window.alert('Surat resmi hanya dapat diterbitkan setelah izin disetujui.');
+    return;
+  }
+
+  const nomorSurat = String(izin.nomorSurat || '').trim();
+  const qrContent = String(izin.kodeVerifikasi || '').trim();
+
+  if (!nomorSurat) {
+    window.alert('Nomor surat belum tersedia. Periksa data persetujuan izin.');
+    return;
+  }
+
+  if (!qrContent) {
+    window.alert('Kode verifikasi belum tersedia. Periksa data persetujuan izin.');
+    return;
+  }
+
   try {
-    qrDataUrl = await QRCode.toDataURL(qrContent, {
+    // Template PDF berisi kop, logo, label, garis, dan tata letak tetap.
+    const response = await fetch(TEMPLATE_URL, { cache: 'no-store' });
+
+    if (!response.ok) {
+      throw new Error(`Template PDF tidak dapat dimuat (HTTP ${response.status}).`);
+    }
+
+    const templateBytes = await response.arrayBuffer();
+    const pdfDoc = await PDFDocument.load(templateBytes);
+    const page = pdfDoc.getPages()[0];
+
+    if (!page) {
+      throw new Error('Halaman template surat tidak ditemukan.');
+    }
+
+    const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const pageWidth = page.getWidth();
+    const pageHeight = page.getHeight();
+
+    if (Math.abs(pageWidth - 595.28) > 3 || Math.abs(pageHeight - 841.89) > 3) {
+      console.warn('Ukuran template berbeda dari A4:', pageWidth, pageHeight);
+    }
+
+    // Nomor Surat: bagian label sudah terdapat pada template.
+    drawFitText(page, regular, nomorSurat, 267, 174.5, 260, 9, 7, GREEN);
+
+    // Identitas santri.
+    const identitas = [
+      { value: santri.namaLengkap || '-', y: 253.7, font: bold },
+      { value: santri.nim || '-', y: 273.1, font: regular },
+      {
+        value: `${santri.programStudi || '-'} / ${santri.fakultas || "Universitas 'Aisyiyah Bandung"}`,
+        y: 292.4,
+        font: regular,
+      },
+      { value: formatBatch(santri.batchId), y: 311.8, font: regular },
+      { value: santri.nomorWhatsApp || '-', y: 331.2, font: regular },
+    ];
+
+    for (const item of identitas) {
+      drawFitText(page, item.font, item.value, 238, item.y, 286, 9, 6.5);
+    }
+
+    // Rincian izin.
+    drawFitText(
+      page,
+      bold,
+      getJenisIzinLabel(izin.jenisIzin),
+      245,
+      407.3,
+      280,
+      8.8,
+      6.5,
+      GREEN,
+    );
+
+    drawFitText(
+      page,
+      regular,
+      formatDateTime(izin.waktuMulai),
+      245,
+      426.8,
+      280,
+      8.8,
+      6.5,
+      GREEN,
+    );
+
+    drawFitText(
+      page,
+      bold,
+      `${formatDateTime(izin.waktuSelesai)} (Wajib Hadir Sebelum Batas Ini)`,
+      245,
+      446.1,
+      285,
+      8.5,
+      6.3,
+      GREEN,
+    );
+
+    drawFitText(
+      page,
+      regular,
+      String(izin.alasan || '-').replace(/\s+/g, ' ').trim(),
+      245,
+      465.5,
+      280,
+      8.8,
+      6.3,
+      GREEN,
+    );
+
+    // Nomor dan kode verifikasi dibuat di bagian tengah.
+    // Tutupi hanya heading statis lama agar kode dapat ditampilkan satu baris.
+    page.drawRectangle({
+      x: 105,
+      y: pageHeight - 539,
+      width: 388,
+      height: 20,
+      color: WHITE,
+    });
+
+    drawCenteredFit(
+      page,
+      bold,
+      `KODE UNIK VERIFIKASI KEDATANGAN SANTRI: ${qrContent}`,
+      535,
+      465,
+      9,
+      6.5,
+      GREEN,
+    );
+
+    // QR berisi kode verifikasi yang sama dengan data surat.
+    const qrDataUrl = await QRCode.toDataURL(qrContent, {
+      errorCorrectionLevel: 'M',
       margin: 1,
-      width: 250,
+      width: 400,
       color: {
         dark: '#064e3b',
         light: '#ffffff',
       },
     });
-  } catch (err) {
-    console.error('Failed generating QR code for surat:', err);
+
+    const base64 = qrDataUrl.split(',')[1];
+
+    if (!base64) {
+      throw new Error('Data QR tidak valid.');
+    }
+
+    const qrBytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const qrImage = await pdfDoc.embedPng(qrBytes);
+
+    // Kotak lembar paraf musyrif tetap ada di sebelah kiri tanda tangan.
+    const boxX = 56;
+    const boxTop = 626;
+    const boxWidth = 256;
+    const boxHeight = 92;
+    const boxColor = rgb(0.80, 0.84, 0.89);
+
+    page.drawRectangle({
+      x: boxX,
+      y: pageHeight - boxTop - boxHeight,
+      width: boxWidth,
+      height: boxHeight,
+      borderColor: boxColor,
+      borderWidth: 1.2,
+    });
+
+    drawTextAtTop(
+      page, bold, 'LEMBAR PARAF KEDATANGAN MUSYRIF PIKET:',
+      68, 641, 8.2, rgb(0.28, 0.34, 0.42),
+    );
+
+    drawTextAtTop(
+      page, regular, 'Tanggal & Jam Kedatangan :',
+      68, 661, 8.2, rgb(0.28, 0.34, 0.42),
+    );
+    drawTextAtTop(
+      page, regular, 'Nama Musyrif Penerima   :',
+      68, 678, 8.2, rgb(0.28, 0.34, 0.42),
+    );
+    drawTextAtTop(
+      page, regular, 'Tanda Tangan Penerima   :',
+      68, 695, 8.2, rgb(0.28, 0.34, 0.42),
+    );
+
+    // Garis isian pada kotak paraf.
+    for (const lineTop of [663, 680, 697]) {
+      page.drawLine({
+        start: { x: 174, y: pageHeight - lineTop },
+        end: { x: 298, y: pageHeight - lineTop },
+        thickness: 0.55,
+        color: boxColor,
+      });
+    }
+
+    // Area kanan: tanggal dan QR saja.
+    // Posisi X tanggal sejajar dengan sisi kiri nama Bu Dita pada template.
+    const tanggalSurat = formatIndonesianDate(new Date());
+    const dateText = `Bandung, ${tanggalSurat}`;
+
+    drawTextAtTop(
+      page,
+      regular,
+      dateText,
+      347.4,
+      635,
+      8.5,
+    );
+
+    // QR tetap tepat di atas nama Bu Dita yang sudah tercetak pada template.
+    const qrSize = 52;
+    const qrX = 347.4;
+    const qrTop = 642;
+
+    page.drawImage(qrImage, {
+      x: qrX,
+      y: pageHeight - qrTop - qrSize,
+      width: qrSize,
+      height: qrSize,
+    });
+
+    // Nama Bu Dita, jabatan di bawah nama, keterangan digital,
+    // dan footer sudah mengikuti elemen statis template.
+    // Jangan menggambar ulang agar teks tidak berduplikasi.
+
+    const outputBytes = await pdfDoc.save();
+    const blob = new Blob([outputBytes as BlobPart], { type: 'application/pdf' });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    link.href = objectUrl;
+    link.download = `Surat_Izin_${safeFilename(santri.nim)}_${safeFilename(izin.jenisIzin)}.pdf`;
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } catch (error) {
+    console.error('[BIMMA_SURAT_PDF]', error);
+
+    window.alert(
+      error instanceof Error
+        ? `Surat PDF gagal dibuat: ${error.message}`
+        : 'Surat PDF gagal dibuat. Silakan coba kembali.',
+    );
   }
-
-  // Header Background bar
-  doc.setFillColor(6, 78, 59); // Emerald 900
-  doc.rect(0, 0, 210, 8, 'F');
-
-  // Letterhead (KOP SURAT)
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(13);
-  doc.setTextColor(6, 78, 59);
-  doc.text("UNIVERSITAS 'AISYIYAH BANDUNG", 105, 20, { align: 'center' });
-
-  doc.setFontSize(11);
-  doc.setTextColor(15, 23, 42);
-  doc.text('PESANTREN MAHASISWA (PESMA) — BIMMA (BIMBINGAN MAHASISWA)', 105, 26, { align: 'center' });
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(100, 116, 139);
-  doc.text('Jl. Terusan Rancagoong II No.1, Gumuruh, Kec. Batununggal, Kota Bandung, Jawa Barat 40275', 105, 31, { align: 'center' });
-  doc.text('Telp/WhatsApp: 0812-3456-7890 • Email: bimma@unisa-bandung.ac.id • Website: unisa-bandung.ac.id', 105, 35, { align: 'center' });
-
-  // Divider lines
-  doc.setDrawColor(6, 78, 59);
-  doc.setLineWidth(0.8);
-  doc.line(18, 38, 192, 38);
-  doc.setLineWidth(0.2);
-  doc.line(18, 39.5, 192, 39.5);
-
-  // Judul Dokumen
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(13);
-  doc.setTextColor(6, 78, 59);
-  doc.text('SURAT IZIN & BUKTI KEDATANGAN MAHASANTRI', 105, 48, { align: 'center' });
-
-  const nomorSurat = izin.nomorSurat || `BIMMA/IZN/${new Date().getFullYear()}/${izin.izinId}`;
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9.5);
-  doc.setTextColor(71, 85, 105);
-  doc.text(`Nomor Surat: ${nomorSurat}`, 105, 53, { align: 'center' });
-
-  // Status Badge in PDF
-  doc.setFillColor(236, 253, 245);
-  doc.setDrawColor(16, 185, 129);
-  doc.roundedRect(65, 56, 80, 7, 2, 2, 'FD');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.setTextColor(4, 120, 87);
-  doc.text('STATUS: RESMI DISETUJUI (TERVERIFIKASI SISTEM)', 105, 60.5, { align: 'center' });
-
-  // Pengantar
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9.5);
-  doc.setTextColor(30, 41, 59);
-  doc.text(
-    'Pengurus Pesantren Mahasiswa (PESMA) Universitas \'Aisyiyah Bandung menerangkan bahwa:',
-    20,
-    70
-  );
-
-  // Kotak Identitas Santri
-  doc.setFillColor(248, 250, 252);
-  doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(20, 74, 170, 42, 2, 2, 'FD');
-
-  const startY = 81;
-  const lineGap = 6.8;
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
-  doc.setTextColor(71, 85, 105);
-  doc.text('Nama Lengkap', 25, startY);
-  doc.text('Nomor Induk Mahasiswa (NIM)', 25, startY + lineGap);
-  doc.text('Program Studi / Fakultas', 25, startY + lineGap * 2);
-  doc.text('Batch Kegiatan BIMMA', 25, startY + lineGap * 3);
-  doc.text('Kontak WhatsApp Santri', 25, startY + lineGap * 4);
-
-  doc.text(':', 78, startY);
-  doc.text(':', 78, startY + lineGap);
-  doc.text(':', 78, startY + lineGap * 2);
-  doc.text(':', 78, startY + lineGap * 3);
-  doc.text(':', 78, startY + lineGap * 4);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(santri.namaLengkap, 82, startY);
-  doc.setFont('helvetica', 'normal');
-  doc.text(santri.nim, 82, startY + lineGap);
-  doc.text(`${santri.programStudi} / ${santri.fakultas || "Universitas 'Aisyiyah Bandung"}`, 82, startY + lineGap * 2);
-  doc.text(santri.batchId, 82, startY + lineGap * 3);
-  doc.text(santri.nomorWhatsApp || '-', 82, startY + lineGap * 4);
-
-  // Keterangan Izin
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9.5);
-  doc.setTextColor(30, 41, 59);
-  doc.text(
-    'Telah diberikan izin resmi meninggalkan asrama / kegiatan dengan rincian sebagai berikut:',
-    20,
-    124
-  );
-
-  // Kotak Rincian Izin
-  doc.setFillColor(240, 253, 244);
-  doc.setDrawColor(187, 247, 208);
-  doc.roundedRect(20, 128, 170, 40, 2, 2, 'FD');
-
-  const izinStartY = 135;
-  const jenisLabel =
-    izin.jenisIzin === 'IZIN_PULANG'
-      ? 'IZIN PULANG KE RUMAH / KELUARGA'
-      : izin.jenisIzin === 'SAKIT'
-      ? 'IZIN SAKIT (KLINIK / RAWAT INAP)'
-      : izin.jenisIzin === 'KEPERLUAN_SYARI'
-      ? 'IZIN KEPERLUAN SYAR\'I'
-      : 'IZIN KHUSUS / DISPENSASI KAMPUS';
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
-  doc.setTextColor(22, 101, 52);
-  doc.text('Jenis Izin', 25, izinStartY);
-  doc.text('Waktu Mulai Izin', 25, izinStartY + lineGap);
-  doc.text('Batas Waktu Kedatangan Kembali', 25, izinStartY + lineGap * 2);
-  doc.text('Alasan / Keterangan', 25, izinStartY + lineGap * 3);
-
-  doc.text(':', 82, izinStartY);
-  doc.text(':', 82, izinStartY + lineGap);
-  doc.text(':', 82, izinStartY + lineGap * 2);
-  doc.text(':', 82, izinStartY + lineGap * 3);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(jenisLabel, 86, izinStartY);
-
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${izin.waktuMulai.replace('T', ' ')} WIB`, 86, izinStartY + lineGap);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(185, 28, 28); // Red color for return deadline
-  doc.text(`${izin.waktuSelesai.replace('T', ' ')} WIB (Wajib Hadir Sebelum Batas Ini)`, 86, izinStartY + lineGap * 2);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(30, 41, 59);
-  const splitAlasan = doc.splitTextToSize(izin.alasan || '-', 100);
-  doc.text(splitAlasan, 86, izinStartY + lineGap * 3);
-
-  // Kotak Verifikasi Kedatangan & QR Code
-  doc.setFillColor(255, 255, 255);
-  doc.setDrawColor(6, 78, 59);
-  doc.setLineWidth(0.4);
-  doc.roundedRect(20, 175, 170, 46, 2, 2, 'FD');
-
-  if (qrDataUrl) {
-    doc.addImage(qrDataUrl, 'PNG', 24, 178, 40, 40);
-  }
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9.5);
-  doc.setTextColor(6, 78, 59);
-  doc.text('KODE UNIK VERIFIKASI KEDATANGAN SANTRI:', 70, 183);
-
-  doc.setFont('courier', 'bold');
-  doc.setFontSize(11);
-  doc.setTextColor(15, 23, 42);
-  doc.text(qrContent, 70, 189);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(71, 85, 105);
-  const instruksi = [
-    '• Saat santri datang kembali ke asrama, perlihatkan surat ini (atau QR di HP) ke Musyrif piket.',
-    '• Musyrif akan melakukan scan QR atau input kode unik untuk memverifikasi kedatangan.',
-    '• Setelah diverifikasi kedatangannya, status santri otomatis AKTIF KEMBALI dan tidak alpa.',
-    '• Apabila belum diverifikasi sampai batas waktu berakhir, santri otomatis dianggap ALPA.',
-  ];
-  let instY = 194;
-  instruksi.forEach((text) => {
-    doc.text(text, 70, instY);
-    instY += 4.2;
-  });
-
-  // Bagian Tanda Tangan
-  const ttdY = 230;
-  const tglCetak = new Date().toLocaleDateString('id-ID', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
-  doc.setTextColor(15, 23, 42);
-  doc.text(`Bandung, ${tglCetak}`, 140, ttdY);
-  doc.text('Pengurus / Musyrif BIMMA', 140, ttdY + 5);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(6, 78, 59);
-  doc.text(petugasNama || 'Musyrif Petugas UNISA Bandung', 140, ttdY + 26);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(100, 116, 139);
-  doc.text('NIDN / NIP. Pesma UNISA Bandung', 140, ttdY + 30);
-
-  // Kolom Paraf / Check-in Kedatangan Musyrif
-  doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(20, ttdY, 90, 32, 2, 2, 'D');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8.5);
-  doc.setTextColor(71, 85, 105);
-  doc.text('LEMBAR PARAF KEDATANGAN MUSYRIF PIKET:', 24, ttdY + 5);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  if (izin.statusKedatangan === 'SUDAH_KEMBALI' || izin.statusKedatangan === 'TERLAMBAT') {
-    doc.setTextColor(izin.statusKedatangan === 'TERLAMBAT' ? 180 : 4, izin.statusKedatangan === 'TERLAMBAT' ? 83 : 120, izin.statusKedatangan === 'TERLAMBAT' ? 9 : 87);
-    doc.text(izin.statusKedatangan === 'TERLAMBAT' ? `[✓] TELAH KEMBALI KE ASRAMA (TERLAMBAT)` : `[✓] TELAH KEMBALI KE ASRAMA`, 24, ttdY + 12);
-    doc.text(`Waktu Kedatangan: ${izin.waktuKedatanganKembali?.replace('T', ' ') || '-'} WIB`, 24, ttdY + 17);
-    doc.text(`Petugas Verifikator: ${izin.petugasVerifikasi || '-'}`, 24, ttdY + 22);
-  } else {
-    doc.text('Tanggal & Jam Kedatangan : __________________________', 24, ttdY + 12);
-    doc.text('Nama Musyrif Penerima    : __________________________', 24, ttdY + 18);
-    doc.text('Tanda Tangan Penerima    : __________________________', 24, ttdY + 24);
-  }
-
-  // Footer Dokumen
-  doc.setFontSize(7.5);
-  doc.setTextColor(148, 163, 184);
-  doc.text(
-    `Dokumen resmi ini diterbitkan secara otomatis oleh Sistem BIMMA Attendance Universitas 'Aisyiyah Bandung.`,
-    105,
-    285,
-    { align: 'center' }
-  );
-
-  // Download PDF
-  const filename = `Surat_Izin_${santri.nim}_${izin.jenisIzin}.pdf`;
-  doc.save(filename);
 }
