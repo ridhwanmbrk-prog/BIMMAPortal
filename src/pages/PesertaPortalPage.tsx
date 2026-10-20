@@ -212,124 +212,130 @@ export const PesertaPortalPage: React.FC = () => {
     setTimeout(() => setIzinSuccess(null), 4000);
   };
 
-  // Render & Download Gambar Kartu Peserta via Canvas
-  const handleDownloadCardImage = () => {
+
+  // Render dan unduh kartu portrait memakai kop kartu resmi.
+  const handleDownloadCardImage = async () => {
     if (!qrCodeUrl || !peserta) return;
+
     setIsDownloadingImage(true);
 
-    const canvas = document.createElement('canvas');
-    canvas.width = 850;
-    canvas.height = 540;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const loadImage = (src: string): Promise<HTMLImageElement> =>
+      new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error(`Gagal memuat gambar: ${src}`));
+        image.src = src;
+      });
 
-    // Background Gradient (Emerald UNISA)
-    const bgGradient = ctx.createLinearGradient(0, 0, 850, 540);
-    bgGradient.addColorStop(0, '#064e3b');
-    bgGradient.addColorStop(0.5, '#047857');
-    bgGradient.addColorStop(1, '#022c22');
-    ctx.fillStyle = bgGradient;
-    ctx.fillRect(0, 0, 850, 540);
+    try {
+      const [kopImg, qrImg] = await Promise.all([
+        loadImage('/images/KOP-KARTU-BIMMA.jpg'),
+        loadImage(qrCodeUrl),
+      ]);
 
-    // Decorative wave arc
-    ctx.beginPath();
-    ctx.arc(800, 50, 260, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(52, 211, 153, 0.08)';
-    ctx.fill();
+      // Portrait 54 x 85 mm pada resolusi 10 px/mm.
+      const canvas = document.createElement('canvas');
+      canvas.width = 540;
+      canvas.height = 850;
 
-    // Border Frame
-    ctx.strokeStyle = '#34d399';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(18, 18, 814, 504);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas tidak dapat digunakan.');
 
-    // Top Header Banner
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 22px sans-serif';
-    ctx.fillText("UNIVERSITAS 'AISYIYAH BANDUNG", 36, 58);
-
-    ctx.fillStyle = '#a7f3d0';
-    ctx.font = '14px sans-serif';
-    ctx.fillText('PESANTREN MAHASISWA (PESMA) • T.A 2026/2027', 36, 82);
-
-    // Gold / Emerald Badge Line
-    ctx.fillStyle = '#10b981';
-    ctx.fillRect(36, 96, 778, 3);
-
-    // Title Card
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 18px sans-serif';
-    ctx.fillText('KARTU TANDA PESERTA BIMMA', 36, 134);
-
-    ctx.fillStyle = '#6ee7b7';
-    ctx.font = 'bold 12px sans-serif';
-    ctx.fillText(`STATUS: AKTIF • ${peserta.batchId.toUpperCase()}`, 36, 156);
-
-    // Student Information Block
-    ctx.fillStyle = '#a7f3d0';
-    ctx.font = '12px sans-serif';
-    ctx.fillText('Nama Mahasantri:', 36, 200);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 22px sans-serif';
-    ctx.fillText(peserta.namaLengkap, 36, 230);
-
-    ctx.fillStyle = '#a7f3d0';
-    ctx.font = '12px sans-serif';
-    ctx.fillText('Nomor Induk Mahasiswa (NIM):', 36, 275);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 24px monospace';
-    ctx.fillText(peserta.nim, 36, 305);
-
-    ctx.fillStyle = '#a7f3d0';
-    ctx.font = '12px sans-serif';
-    ctx.fillText('Program Studi:', 36, 350);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 18px sans-serif';
-    ctx.fillText(peserta.programStudi, 36, 376);
-
-    ctx.fillStyle = '#a7f3d0';
-    ctx.font = '12px sans-serif';
-    ctx.fillText('Kontak / WhatsApp:', 36, 420);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 15px sans-serif';
-    ctx.fillText(peserta.nomorWhatsApp || '-', 36, 444);
-
-    // Watermark footer
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-    ctx.font = '11px sans-serif';
-    ctx.fillText('Scan QR code ini pada musyrif/musyrifah piket saat memasuki kegiatan harian.', 36, 495);
-
-    // Draw QR Code Image into Canvas
-    const qrImg = new Image();
-    qrImg.onload = () => {
-      // White container box for QR Code
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(560, 150, 240, 240);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Draw QR image
-      ctx.drawImage(qrImg, 570, 160, 220, 220);
+      // Kop memakai rasio asli gambar agar tidak terdistorsi.
+      const kopHeight = Math.round(
+        (kopImg.naturalHeight / kopImg.naturalWidth) * canvas.width
+      );
+      ctx.drawImage(kopImg, 0, 0, canvas.width, kopHeight);
 
-      // Label below QR
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 13px sans-serif';
+      // Bingkai kartu.
+      ctx.strokeStyle = '#064e3b';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(3, 3, canvas.width - 6, canvas.height - 6);
+
       ctx.textAlign = 'center';
-      ctx.fillText('KODE PRESENSI RESMI', 680, 415);
-      ctx.font = 'monospace 13px';
-      ctx.fillStyle = '#a7f3d0';
-      ctx.fillText(peserta.nim, 680, 435);
-      ctx.textAlign = 'left';
+      ctx.fillStyle = '#064e3b';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('KARTU TANDA PESERTA BIMMA', 270, 231, 480);
 
-      // Export as PNG image download
+      ctx.fillStyle = '#047857';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillText(
+        `STATUS: AKTIF • ${String(peserta.batchId || '').toUpperCase()}`,
+        270,
+        255,
+        480
+      );
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = '15px sans-serif';
+      ctx.fillText('NAMA MAHASANTRI', 270, 290);
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 27px sans-serif';
+      ctx.fillText(peserta.namaLengkap || '-', 270, 322, 480);
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = '15px sans-serif';
+      ctx.fillText('NOMOR INDUK MAHASISWA (NIM)', 270, 357);
+
+      ctx.fillStyle = '#064e3b';
+      ctx.font = 'bold 24px monospace';
+      ctx.fillText(peserta.nim || '-', 270, 388, 480);
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = '15px sans-serif';
+      ctx.fillText('PROGRAM STUDI', 270, 423);
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 21px sans-serif';
+      ctx.fillText(peserta.programStudi || '-', 270, 454, 480);
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = '15px sans-serif';
+      ctx.fillText('KONTAK / WHATSAPP', 270, 489);
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = '19px sans-serif';
+      ctx.fillText(peserta.nomorWhatsApp || '-', 270, 520, 480);
+
+      // QR presensi.
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(185, 546, 170, 170);
+      ctx.drawImage(qrImg, 200, 561, 140, 140);
+
+      ctx.fillStyle = '#064e3b';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillText('KODE PRESENSI RESMI', 270, 738);
+
+      ctx.font = 'bold 18px monospace';
+      ctx.fillText(peserta.nim || '-', 270, 764, 480);
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = '12px sans-serif';
+      ctx.fillText(
+        'Pindai QR saat presensi bersama petugas.',
+        270,
+        808,
+        480
+      );
+
       const imageUri = canvas.toDataURL('image/png');
       const downloadLink = document.createElement('a');
-      downloadLink.download = `Kartu_Peserta_${peserta.nim}_${peserta.namaLengkap.replace(/\s+/g, '_')}.png`;
+      downloadLink.download =
+        `Kartu_Peserta_${peserta.nim}_${peserta.namaLengkap.replace(/\s+/g, '_')}.png`;
       downloadLink.href = imageUri;
       document.body.appendChild(downloadLink);
       downloadLink.click();
-      document.body.removeChild(downloadLink);
-
+      downloadLink.remove();
+    } catch (error) {
+      console.error('[BIMMA_CARD_IMAGE]', error);
+      window.alert('Gagal membuat gambar kartu peserta. Silakan coba lagi.');
+    } finally {
       setIsDownloadingImage(false);
-    };
-    qrImg.src = qrCodeUrl;
+    }
   };
 
   const myApprovedIzin = izinList.find(
@@ -938,64 +944,85 @@ export const PesertaPortalPage: React.FC = () => {
               </p>
             </div>
 
-            {/* VISUAL KARTU MAHASANTRI */}
-            <div className="p-6 rounded-[24px] bg-gradient-to-b from-[#064e3b] via-[#047857] to-[#022c22] text-white shadow-xl border-2 border-emerald-400/40 relative overflow-hidden text-left">
-              <div className="flex items-center justify-between border-b border-white/20 pb-3 mb-4">
-                <div>
-                  <p className="text-[10px] font-bold text-emerald-200">UNIVERSITAS 'AISYIYAH BANDUNG</p>
-                  <p className="text-xs font-black text-white">PESMA BIMMA • 2026/2027</p>
-                </div>
-                <span className="text-[10px] font-black px-2.5 py-0.5 rounded-full bg-white/20 text-white">
-                  {peserta.batchId}
+            {/* VISUAL KARTU MAHASANTRI: KOP RESMI, ORIENTASI PORTRAIT */}
+            <div className="mx-auto flex aspect-[54/85] w-full max-w-[270px] flex-col overflow-hidden rounded-2xl border-2 border-emerald-900 bg-white text-left text-slate-900 shadow-xl">
+              <img
+                src="/images/KOP-KARTU-BIMMA.jpg"
+                alt="Kop resmi kartu peserta BIMMA"
+                className="block h-auto w-full shrink-0"
+              />
+
+              <div className="flex items-center justify-between gap-2 px-3 pt-2">
+                <span className="max-w-[60%] truncate rounded-md bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-900">
+                  {peserta.batchId || '-'}
+                </span>
+                <span className="rounded-md bg-emerald-700 px-2 py-1 text-[9px] font-black text-white">
+                  AKTIF
                 </span>
               </div>
 
-              <div className="grid grid-cols-12 gap-3 items-center">
-                {/* Left Info */}
-                <div className="col-span-7 space-y-2">
-                  <div>
-                    <p className="text-[9px] text-emerald-200 uppercase font-semibold">Nama Mahasantri:</p>
-                    <h4 className="text-sm font-black text-white leading-tight truncate">
-                      {peserta.namaLengkap}
-                    </h4>
-                  </div>
+              <p className="px-2 pt-1 text-center text-[10px] font-black text-emerald-900">
+                KARTU TANDA PESERTA BIMMA
+              </p>
 
-                  <div>
-                    <p className="text-[9px] text-emerald-200 uppercase font-semibold">Nomor Induk (NIM):</p>
-                    <p className="text-base font-black font-mono text-emerald-100">
-                      {peserta.nim}
-                    </p>
-                  </div>
-
-                  <div>
-                    <p className="text-[9px] text-emerald-200 uppercase font-semibold">Program Studi:</p>
-                    <p className="text-xs font-bold text-white">
-                      {peserta.programStudi}
-                    </p>
-                  </div>
-
-                  <span className="inline-block mt-2 px-2 py-0.5 rounded-md bg-emerald-500/30 text-emerald-200 text-[9px] font-black">
-                    TERVERIFIKASI SISTEM
-                  </span>
+              <div className="space-y-1.5 px-4 pt-2">
+                <div>
+                  <p className="text-[8px] font-semibold uppercase leading-tight text-slate-500">
+                    Nama Mahasantri
+                  </p>
+                  <p className="break-words text-[11px] font-black leading-tight text-slate-900">
+                    {peserta.namaLengkap}
+                  </p>
                 </div>
 
-                {/* Right QR Box */}
-                <div className="col-span-5 flex flex-col items-center justify-center">
-                  <div className="w-36 h-36 bg-white p-2 rounded-2xl shadow-inner flex items-center justify-center">
-                    {qrCodeUrl ? (
-                      <img
-                        src={qrCodeUrl}
-                        alt={`QR ${peserta.nim}`}
-                        className="w-full h-full object-contain"
-                      />
-                    ) : (
-                      <div className="text-slate-400 text-xs">Membuat QR...</div>
-                    )}
-                  </div>
-                  <span className="text-[8px] font-bold text-emerald-200 mt-1 uppercase">
-                    Scan Absensi
-                  </span>
+                <div>
+                  <p className="text-[8px] font-semibold uppercase leading-tight text-slate-500">
+                    Nomor Induk Mahasiswa (NIM)
+                  </p>
+                  <p className="break-words font-mono text-[12px] font-black leading-tight text-emerald-900">
+                    {peserta.nim}
+                  </p>
                 </div>
+
+                <div>
+                  <p className="text-[8px] font-semibold uppercase leading-tight text-slate-500">
+                    Program Studi
+                  </p>
+                  <p className="break-words text-[10px] font-bold leading-tight text-slate-800">
+                    {peserta.programStudi || '-'}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-[8px] font-semibold uppercase leading-tight text-slate-500">
+                    Kontak / WhatsApp
+                  </p>
+                  <p className="break-words text-[10px] font-medium leading-tight text-slate-800">
+                    {peserta.nomorWhatsApp || '-'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-auto flex flex-col items-center px-3 pb-3 pt-2">
+                <div className="flex h-24 w-24 items-center justify-center rounded-lg border border-slate-200 bg-white p-1">
+                  {qrCodeUrl ? (
+                    <img
+                      src={qrCodeUrl}
+                      alt={`QR ${peserta.nim}`}
+                      className="h-full w-full object-contain"
+                    />
+                  ) : (
+                    <span className="text-center text-[9px] text-slate-400">
+                      Membuat QR...
+                    </span>
+                  )}
+                </div>
+                <span className="mt-1 text-[8px] font-black uppercase text-emerald-900">
+                  Kode Presensi Resmi
+                </span>
+                <span className="font-mono text-[10px] font-bold text-slate-700">
+                  {peserta.nim}
+                </span>
               </div>
             </div>
 

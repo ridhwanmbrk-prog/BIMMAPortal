@@ -126,6 +126,8 @@ export const IzinPage: React.FC<IzinPageProps> = ({ onOpenScanner }) => {
       if (res.success) {
         setToastMessage(res.message);
         setTimeout(() => setToastMessage(null), 5000);
+      } else {
+        window.alert(res.message);
       }
     } else {
       rejectIzin(izinId, currentUser?.id || 'U001');

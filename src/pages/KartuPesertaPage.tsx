@@ -14,6 +14,25 @@ import { jsPDF } from 'jspdf';
 import { Peserta, Batch } from '../types';
 import { getItems, getConfig } from '../storage';
 
+async function loadCardLogoDataUrl(path: string): Promise<string | null> {
+  try {
+    const response = await fetch(path);
+    if (!response.ok) return null;
+    const blob = await response.blob();
+
+    return await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () =>
+        resolve(typeof reader.result === 'string' ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+
 export const KartuPesertaPage: React.FC = () => {
   const [pesertaList, setPesertaList] = useState<Peserta[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -85,59 +104,74 @@ export const KartuPesertaPage: React.FC = () => {
   const [printSantriList, setPrintSantriList] = useState<Peserta[]>([]);
   const printIframeRef = React.useRef<HTMLIFrameElement | null>(null);
 
-  // Helper untuk membuat dokumen PDF Kartu Santri ID-1 (54mm x 85mm)
-  const generateKartuDoc = (targetSantri: Peserta[]) => {
+
+  // Membuat kartu peserta ukuran ID-1 (54 x 85 mm).
+  const generateKartuDoc = async (targetSantri: Peserta[]) => {
     const doc = new jsPDF({
       orientation: 'portrait',
       unit: 'mm',
       format: [54, 85],
     });
 
+    const logoDataUrl = await loadCardLogoDataUrl(
+      '/images/KOP-KARTU-BIMMA.jpg'
+    );
+
     for (let i = 0; i < targetSantri.length; i++) {
       const santri = targetSantri[i];
       if (i > 0) doc.addPage([54, 85], 'portrait');
 
-      // Header Background
-      doc.setFillColor(6, 78, 59); // Emerald-900
+      // Kop resmi menggunakan satu gambar utuh dari aset repository.
+      // Ukuran header tetap 54 x 20 mm.
+      doc.setFillColor(6, 78, 59);
       doc.rect(0, 0, 54, 20, 'F');
 
-      // Header Title
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(8);
-      doc.setFont('helvetica', 'bold');
-      doc.text("UNIVERSITAS 'AISYIYAH BANDUNG", 27, 8, { align: 'center' });
-      doc.setFontSize(6);
-      doc.text('PESMA — BIMMA (BIMBINGAN MAHASISWA)', 27, 13, { align: 'center' });
+      if (!logoDataUrl) {
+        throw new Error('Kop kartu BIMMA tidak dapat dimuat.');
+      }
 
-      // Content Frame
+      doc.addImage(logoDataUrl, 'JPEG', 0, 0, 54, 20);
+
+      // Isi kartu tetap dipertahankan.
       doc.setTextColor(30, 41, 59);
       doc.setFontSize(8.5);
       doc.setFont('helvetica', 'bold');
-      doc.text(santri.namaLengkap, 27, 26, { align: 'center' });
+      doc.text(santri.namaLengkap, 27, 26, {
+        align: 'center',
+        maxWidth: 50,
+      });
 
       doc.setFontSize(7.5);
       doc.setFont('helvetica', 'normal');
-      doc.text(santri.programStudi, 27, 30, { align: 'center' });
+      doc.text(santri.programStudi || '-', 27, 30, {
+        align: 'center',
+        maxWidth: 50,
+      });
 
-      // QR Code berisi gabungan ID peserta-NIM
+      // QR presensi tetap menggunakan payload yang sudah dihasilkan aplikasi.
       const qrUrl = qrImages[santri.pesertaId];
       if (qrUrl) {
         doc.addImage(qrUrl, 'PNG', 12, 34, 30, 30);
       }
 
-      // NIM Label
       doc.setFontSize(8.5);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(6, 78, 59);
-      doc.text('NIM: ' + santri.nim, 27, 68, { align: 'center' });
+      doc.text('NIM: ' + santri.nim, 27, 68, {
+        align: 'center',
+        maxWidth: 50,
+      });
 
-      // Footer Card
+      // Footer lama dipertahankan.
       doc.setFillColor(241, 245, 249);
       doc.rect(0, 75, 54, 10, 'F');
       doc.setFontSize(5);
       doc.setTextColor(100, 116, 139);
       doc.setFont('helvetica', 'normal');
-      doc.text('Pesma UNISA • Jl. Terusan Rancagoong II No.1', 27, 81, { align: 'center' });
+      doc.text('Pesma UNISA • Jl. Terusan Rancagoong II No.1', 27, 81, {
+        align: 'center',
+        maxWidth: 52,
+      });
     }
 
     return doc;
@@ -153,7 +187,7 @@ export const KartuPesertaPage: React.FC = () => {
 
     setIsGeneratingPdf(true);
     try {
-      const doc = generateKartuDoc(targetSantri);
+      const doc = await generateKartuDoc(targetSantri);
       doc.save(`Kartu_Peserta_BIMMA_${targetSantri.length}_Santri.pdf`);
     } catch (err: unknown) {
       alert('Gagal menghasilkan PDF: ' + (err as Error).message);
@@ -163,7 +197,7 @@ export const KartuPesertaPage: React.FC = () => {
   };
 
   // CETAK CEPAT: Hubungkan Langsung ke Printer Device & Tampilkan Preview Popup
-  const handleOpenCetakCepat = () => {
+  const handleOpenCetakCepat = async () => {
     // Jika ada yang dicentang gunakan yang dicentang, jika tidak ada centang cetak semua yang tampil di filter
     const targetSantri = selectedIds.length > 0
       ? filtered.filter((p) => selectedIds.includes(p.pesertaId))
@@ -178,7 +212,7 @@ export const KartuPesertaPage: React.FC = () => {
     setIsGeneratingPdf(true);
 
     try {
-      const doc = generateKartuDoc(targetSantri);
+      const doc = await generateKartuDoc(targetSantri);
       const blob = doc.output('blob');
       const blobUrl = URL.createObjectURL(blob);
       setPrintPdfBlobUrl(blobUrl);
