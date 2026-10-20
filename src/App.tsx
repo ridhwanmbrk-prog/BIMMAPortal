@@ -232,29 +232,23 @@ export default function App() {
     setIsD1Bootstrapping(false);
     setUser(user);
 
-    // Jika sebelumnya user mencoba membuka path tertentu (deep link)
-    if (intendedRoute) {
-      const targetRoute = parsePathToRoute(intendedRoute);
-      setIntendedRoute(null);
+    // Login baru selalu memulai staf/admin di Dashboard Monitoring.
+    // Dossier pilihan dan tab lama dibersihkan agar tidak terbawa antar-login.
+    setIntendedRoute(null);
+    localStorage.removeItem('bimma_current_page');
+    localStorage.removeItem('bimma_dashboard_tab');
 
-      if (targetRoute.type === 'PAGE') {
-        // Cek batasan hak akses santri vs admin
-        if (user.role === 'PESERTA') {
-          handleNavigatePage('peserta-portal');
-        } else {
-          handleNavigatePage(targetRoute.pageId);
-        }
-        return;
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const key = sessionStorage.key(i);
+      if (key?.startsWith('bimma_dashboard_selected_santri_')) {
+        sessionStorage.removeItem(key);
       }
     }
 
-    // Navigasi default berdasarkan peran
     if (user.role === 'PESERTA') {
       handleNavigatePage('peserta-portal');
     } else {
-      const saved = localStorage.getItem('bimma_current_page') as PageId | null;
-      const target = saved && VALID_PAGES.includes(saved) && saved !== 'peserta-portal' ? saved : 'dashboard';
-      handleNavigatePage(target);
+      handleNavigatePage('dashboard');
     }
   };
 

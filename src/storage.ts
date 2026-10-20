@@ -287,6 +287,11 @@ async function performSyncWithCloudflareD1(role: User['role'] = 'ADMIN'): Promis
     writeCachedRaw(STORAGE_KEYS.USERS_ACCOUNTS, (userResult.users || []).map(u => ({ ...u, password: '', passwordHash: '' })));
   }
   clearLegacyBusinessStorage(clearLegacyAccounts);
+
+  if (role !== 'PESERTA') {
+    syncPetugasRosterFromAccounts();
+  }
+
   return { success: true, message: 'Data aplikasi berhasil dimuat dari Cloudflare D1.' };
 }
 
@@ -1236,6 +1241,88 @@ export function deleteMusyrif(id: string): void {
   setItems('MUSYRIF', filtered);
 }
 
+/**
+ * Sinkronkan akun PETUGAS dengan daftar Musyrif/Musyrifah.
+ * Profil manual dipertahankan; akun yang dinonaktifkan tetap ada
+ * sebagai profil nonaktif, dan akun yang dihapus/diubah menjadi ADMIN
+ * dilepas dari daftar petugas otomatis.
+ */
+export function syncPetugasRosterFromAccounts(
+  accounts: UserAccount[] = getUserAccounts(),
+): void {
+  const existing = getItems<Musyrif>('MUSYRIF');
+  const activeBefore = getActiveMusyrif();
+  const staffAccounts = accounts.filter((account) => account.role === 'PETUGAS');
+  const staffIds = new Set(staffAccounts.map((account) => account.id));
+  let updated = [...existing];
+
+  for (const account of staffAccounts) {
+    const accountName = String(account.namaLengkap || account.username).trim();
+    const normalizedName = accountName.toLocaleLowerCase('id-ID');
+    const gender = account.gender === 'AKHWAT' ? 'AKHWAT' : 'IKHWAN';
+    const managedId = `ACCOUNT_USER_${account.id}`;
+
+    let index = updated.findIndex(
+      (item) => item.akunUserId === account.id || item.id === managedId,
+    );
+
+    // Jika profil manual yang sama sudah ada secara unik, tautkan profil
+    // tersebut alih-alih membuat baris duplikat.
+    if (index < 0) {
+      const matches = updated
+        .map((item, itemIndex) => ({ item, itemIndex }))
+        .filter(({ item }) =>
+          !item.akunUserId &&
+          !item.id.startsWith('ACCOUNT_USER_') &&
+          item.gender === gender &&
+          item.nama.trim().toLocaleLowerCase('id-ID') === normalizedName
+        );
+
+      if (matches.length === 1) index = matches[0].itemIndex;
+    }
+
+    const previous = index >= 0 ? updated[index] : null;
+    const synced: Musyrif = {
+      ...(previous || {}),
+      id: previous?.id || managedId,
+      akunUserId: account.id,
+      nama: accountName || account.username,
+      gender,
+      status: Boolean(account.statusAktif),
+    };
+
+    if (index >= 0) {
+      updated[index] = synced;
+    } else {
+      updated.push(synced);
+    }
+  }
+
+  // Bersihkan profil otomatis hanya jika akunnya sudah tidak berperan PETUGAS.
+  // Baris manual yang tidak tertaut tidak ikut terhapus.
+  updated = updated.filter((item) => {
+    const linkedAccountId =
+      item.akunUserId ||
+      (item.id.startsWith('ACCOUNT_USER_')
+        ? item.id.slice('ACCOUNT_USER_'.length)
+        : null);
+
+    return !linkedAccountId || staffIds.has(linkedAccountId);
+  });
+
+  if (JSON.stringify(existing) !== JSON.stringify(updated)) {
+    setItems('MUSYRIF', updated);
+  }
+
+  // Jangan mempertahankan petugas piket yang sudah dinonaktifkan/dilepas.
+  if (
+    activeBefore &&
+    !updated.some((item) => item.id === activeBefore.id && item.status)
+  ) {
+    setActiveMusyrif(null);
+  }
+}
+
 // Absensi Edit / Update Helpers (Khusus Admin)
 export function updateAbsensiRecord(absensiId: string, updates: Partial<Absensi>): void {
   const list = getItems<Absensi>('ABSENSI');
@@ -1338,6 +1425,7 @@ export async function saveUserAccount(account: UserAccount): Promise<{ success: 
   const persisted = await d1SaveUser(updatedAccount);
   if (!persisted.success) return persisted;
   writeCachedRaw(STORAGE_KEYS.USERS_ACCOUNTS, list.map(u => ({ ...u, password: '', passwordHash: '' })));
+  syncPetugasRosterFromAccounts(list);
 
   addAuditLog({
     penggunaId: getCurrentUser()?.id || 'U001',
@@ -1369,6 +1457,7 @@ export async function deleteUserAccount(id: string): Promise<{ success: boolean;
   const persisted = await d1DeleteUser(id);
   if (!persisted.success) return persisted;
   writeCachedRaw(STORAGE_KEYS.USERS_ACCOUNTS, filtered.map(u => ({ ...u, password: '', passwordHash: '' })));
+  syncPetugasRosterFromAccounts(filtered);
 
   addAuditLog({
     penggunaId: getCurrentUser()?.id || 'U001',
@@ -1416,6 +1505,7 @@ export async function changeStaffCredentials(
   const persisted = await d1SaveUser(target);
   if (!persisted.success) return persisted;
   writeCachedRaw(STORAGE_KEYS.USERS_ACCOUNTS, list.map(u => ({ ...u, password: '', passwordHash: '' })));
+  syncPetugasRosterFromAccounts(list);
 
   // Update current user session jika user yang sedang login diubah
   const currentUser = getCurrentUser();

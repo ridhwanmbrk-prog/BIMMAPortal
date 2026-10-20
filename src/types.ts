@@ -150,6 +150,8 @@ export interface Pembenaran {
 export interface Musyrif {
   id: string;
   nama: string;
+  // Menghubungkan profil petugas dengan akun login D1.
+  akunUserId?: string;
   gender: 'IKHWAN' | 'AKHWAT';
   status: boolean;
   nim?: string;

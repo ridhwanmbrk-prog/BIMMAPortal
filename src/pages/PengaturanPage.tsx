@@ -7,7 +7,6 @@ import {
   AlertTriangle,
   Copy,
   FileCode,
-  KeyRound,
   UserPlus,
   Users,
   Edit2,
@@ -27,7 +26,6 @@ import {
   getUserAccounts,
   saveUserAccount,
   deleteUserAccount,
-  changeStaffCredentials,
   getCurrentUser,
 } from '../storage';
 import { UserAccount } from '../types';
@@ -48,11 +46,6 @@ export const PengaturanPage: React.FC = () => {
 
   // Akun Manajemen State
   const [accounts, setAccounts] = useState<UserAccount[]>([]);
-  const [myUsername, setMyUsername] = useState(currentUser?.username || '');
-  const [myNewPassword, setMyNewPassword] = useState('');
-  const [myConfirmPassword, setMyConfirmPassword] = useState('');
-  const [showMyPassword, setShowMyPassword] = useState(false);
-  const [myCredMessage, setMyCredMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Modal Tambah / Edit Akun
   const [modalOpen, setModalOpen] = useState(false);
@@ -105,34 +98,6 @@ export const PengaturanPage: React.FC = () => {
   useEffect(() => {
     loadAccounts();
   }, []);
-
-  // Handler Simpan Kredensial Saya
-  const handleUpdateMyCredentials = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setMyCredMessage(null);
-
-    if (!currentUser) return;
-    if (myNewPassword && myNewPassword !== myConfirmPassword) {
-      setMyCredMessage({ type: 'error', text: 'Konfirmasi password baru tidak cocok!' });
-      return;
-    }
-
-    const res = await changeStaffCredentials(
-      currentUser.id,
-      myUsername.trim(),
-      myNewPassword.trim() || undefined
-    );
-
-    if (res.success) {
-      setMyCredMessage({ type: 'success', text: res.message });
-      setMyNewPassword('');
-      setMyConfirmPassword('');
-      loadAccounts();
-      setTimeout(() => setMyCredMessage(null), 4000);
-    } else {
-      setMyCredMessage({ type: 'error', text: res.message });
-    }
-  };
 
   // Buka Modal Tambah Akun
   const handleOpenAddAccount = () => {
@@ -361,105 +326,6 @@ export const PengaturanPage: React.FC = () => {
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           <span>Cloudflare D1 Backend Aktif</span>
         </div>
-      </div>
-
-      {/* 1. SEKSI GANTI USERNAME & PASSWORD AKUN SAYA */}
-      <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/70 shadow-xs space-y-4">
-        <div className="flex items-center gap-2.5 pb-3 border-b border-slate-100">
-          <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold shrink-0">
-            <KeyRound className="w-4 h-4" />
-          </div>
-          <div>
-            <h2 className="text-xs sm:text-sm font-black text-slate-800">
-              Kredensial Akun Saya ({currentUser?.namaLengkap})
-            </h2>
-            <p className="text-[10px] sm:text-[11px] text-slate-500">
-              Ubah username atau password login akun yang sedang Anda gunakan saat ini.
-            </p>
-          </div>
-        </div>
-
-        <form onSubmit={handleUpdateMyCredentials} className="space-y-3.5 text-xs">
-          {myCredMessage && (
-            <div
-              className={`p-3 rounded-xl border font-bold flex items-center gap-2 ${
-                myCredMessage.type === 'success'
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                  : 'bg-rose-50 border-rose-200 text-rose-700'
-              }`}
-            >
-              {myCredMessage.type === 'success' ? (
-                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
-              ) : (
-                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-              )}
-              <span>{myCredMessage.text}</span>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                Username Anda
-              </label>
-              <div className="relative flex items-center">
-                <input
-                  type="text"
-                  required
-                  value={myUsername}
-                  onChange={(e) => setMyUsername(e.target.value)}
-                  placeholder="admin"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                Password Baru (Opsional)
-              </label>
-              <div className="relative flex items-center">
-                <input
-                  type={showMyPassword ? 'text' : 'password'}
-                  value={myNewPassword}
-                  onChange={(e) => setMyNewPassword(e.target.value)}
-                  placeholder="Kosongkan bila tidak ganti"
-                  className="w-full pl-3 pr-8 py-2 rounded-xl border border-slate-200 bg-slate-50 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowMyPassword(!showMyPassword)}
-                  className="absolute right-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
-                >
-                  {showMyPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                Konfirmasi Password Baru
-              </label>
-              <input
-                type={showMyPassword ? 'text' : 'password'}
-                value={myConfirmPassword}
-                onChange={(e) => setMyConfirmPassword(e.target.value)}
-                placeholder="Ulangi password baru"
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-            </div>
-          </div>
-
-          <div className="flex justify-end pt-1">
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-xl glass-btn-emerald text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-98 transition"
-            >
-              <Check className="w-3.5 h-3.5" />
-              <span>Simpan Kredensial Saya</span>
-            </button>
-          </div>
-        </form>
       </div>
 
       {/* 2. SEKSI MANAJEMEN SEMUA AKUN PENGGUNA (ADMIN & PETUGAS) */}

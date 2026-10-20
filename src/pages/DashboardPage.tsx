@@ -61,20 +61,52 @@ interface DashboardProps {
   onOpenScanner: (mode?: 'PRESENSI' | 'SURAT_IZIN') => void;
 }
 
+
+function getIsoDayNumber(value: string | undefined): number | null {
+  const match = String(value || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) return null;
+
+  return Math.floor(date.getTime() / 86400000);
+}
+
+function formatBatchDate(value: string | undefined): string {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return value || '-';
+
+  const date = new Date(
+    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12)
+  );
+
+  return new Intl.DateTimeFormat('id-ID', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Jakarta',
+  }).format(date);
+}
+
 export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScanner }) => {
   const user = getCurrentUser();
   const isAdmin = user?.role === 'ADMIN';
+  const dossierSessionKey = `bimma_dashboard_selected_santri_${user?.id || 'anonymous'}`;
 
   // Sub-tab Dashboard (Utamanya: Live Overview, Absen Harian/Kegiatan, Per Santri)
-  const [dashboardTab, setDashboardTab] = useState<'overview' | 'harian-kegiatan' | 'per-santri'>(() => {
-    const saved = localStorage.getItem('bimma_dashboard_tab');
-    if (saved === 'overview' || saved === 'harian-kegiatan' || saved === 'per-santri') return saved;
-    return 'overview';
-  });
+  // Setiap kali Dashboard dibuka, mulai dari tab Monitoring Kegiatan.
+  const [dashboardTab, setDashboardTab] = useState<'overview' | 'harian-kegiatan' | 'per-santri'>('overview');
 
   const handleSetDashboardTab = (tab: 'overview' | 'harian-kegiatan' | 'per-santri') => {
     setDashboardTab(tab);
-    localStorage.setItem('bimma_dashboard_tab', tab);
   };
 
   const [pesertaList, setPesertaList] = useState<Peserta[]>([]);
@@ -98,7 +130,19 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
 
 
   // State untuk Tab Absen Per Santri
-  const [selectedSantriId, setSelectedSantriId] = useState<string>('');
+  // Simpan peserta yang dipilih pada sesi browser ini agar bertahan saat refresh.
+  const [selectedSantriId, setSelectedSantriId] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    return window.sessionStorage.getItem(dossierSessionKey) || '';
+  });
+  useEffect(() => {
+    if (selectedSantriId) {
+      window.sessionStorage.setItem(dossierSessionKey, selectedSantriId);
+    } else {
+      window.sessionStorage.removeItem(dossierSessionKey);
+    }
+  }, [selectedSantriId, dossierSessionKey]);
+
   const [searchSantriQuery, setSearchSantriQuery] = useState('');
   const [hoveredGraphIdx, setHoveredGraphIdx] = useState<number | null>(null);
 
@@ -153,10 +197,6 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
     setBatches(b);
     setPendingKedatangan(getPendingKedatanganIzin());
 
-    if (p.length > 0 && !selectedSantriId) {
-      setSelectedSantriId(p[0].pesertaId);
-    }
-
     // Deteksi kegiatan yang sedang berlangsung secara realtime
     const detected = getKegiatanSedangBerlangsung(j);
     if (!selectedJadwalId && detected.kegiatan) {
@@ -206,6 +246,138 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
   const activeBatchToday = getActiveBatchToday(batches, selectedDate);
   const currentBatch = (selectedBatchId ? batches.find((b) => b.batchId === selectedBatchId) : null) || activeBatchToday || null;
   const currentBatchStatus = getBatchStatusInfo(currentBatch, selectedDate);
+
+  // Progres waktu batch memakai tanggal kalender hari ini,
+  // terpisah dari tanggal filter laporan dashboard.
+  const phaseTodayDay = getIsoDayNumber(todayStr);
+
+  const phaseBatchCandidates = [...batches]
+    .filter((batch) => {
+      const start = getIsoDayNumber(batch.tanggalMulai);
+      const end = getIsoDayNumber(
+        batch.tanggalSelesai || batch.tanggalMulai
+      );
+      return start !== null && end !== null && end >= start;
+    })
+    .sort((a, b) =>
+      (getIsoDayNumber(a.tanggalMulai) ?? 0) -
+      (getIsoDayNumber(b.tanggalMulai) ?? 0)
+    );
+
+  // Pilih batch yang berlangsung, batch mendatang terdekat,
+  // atau batch terbaru jika semua batch sudah selesai.
+  const phaseBatch =
+    phaseBatchCandidates.find((batch) => {
+      const start = getIsoDayNumber(batch.tanggalMulai);
+      const end = getIsoDayNumber(
+        batch.tanggalSelesai || batch.tanggalMulai
+      );
+      return phaseTodayDay !== null &&
+        start !== null &&
+        end !== null &&
+        phaseTodayDay >= start &&
+        phaseTodayDay <= end;
+    }) ||
+    phaseBatchCandidates.find((batch) => {
+      const start = getIsoDayNumber(batch.tanggalMulai);
+      return phaseTodayDay !== null &&
+        start !== null &&
+        phaseTodayDay < start;
+    }) ||
+    [...phaseBatchCandidates].reverse().find((batch) => {
+      const end = getIsoDayNumber(
+        batch.tanggalSelesai || batch.tanggalMulai
+      );
+      return phaseTodayDay !== null &&
+        end !== null &&
+        phaseTodayDay > end;
+    }) ||
+    null;
+
+  const phaseStartDay = getIsoDayNumber(phaseBatch?.tanggalMulai);
+  const phaseEndDay = getIsoDayNumber(
+    phaseBatch?.tanggalSelesai || phaseBatch?.tanggalMulai
+  );
+
+  const phaseState: 'KOSONG' | 'MENDATANG' | 'BERLANGSUNG' | 'SELESAI' =
+    !phaseBatch || phaseTodayDay === null ||
+    phaseStartDay === null || phaseEndDay === null
+      ? 'KOSONG'
+      : phaseTodayDay < phaseStartDay
+        ? 'MENDATANG'
+        : phaseTodayDay > phaseEndDay
+          ? 'SELESAI'
+          : 'BERLANGSUNG';
+
+  // Durasi menghitung hari kalender termasuk tanggal mulai dan selesai.
+  const phaseTotalDays =
+    phaseStartDay !== null && phaseEndDay !== null
+      ? Math.max(1, phaseEndDay - phaseStartDay + 1)
+      : 0;
+
+  const phaseElapsedDays =
+    phaseState === 'SELESAI'
+      ? phaseTotalDays
+      : phaseState !== 'BERLANGSUNG' ||
+        phaseTodayDay === null || phaseStartDay === null
+        ? 0
+        : Math.min(
+            phaseTotalDays,
+            Math.max(1, phaseTodayDay - phaseStartDay + 1)
+          );
+
+  const phaseProgressPct =
+    phaseState === 'SELESAI'
+      ? 100
+      : phaseState === 'BERLANGSUNG' && phaseTotalDays > 0
+        ? Math.min(
+            100,
+            Math.round(phaseElapsedDays / phaseTotalDays * 100)
+          )
+        : 0;
+
+  const phaseDaysUntilStart =
+    phaseStartDay !== null && phaseTodayDay !== null
+      ? Math.max(0, phaseStartDay - phaseTodayDay)
+      : 0;
+
+  const phaseDaysUntilEnd =
+    phaseEndDay !== null && phaseTodayDay !== null
+      ? Math.max(0, phaseEndDay - phaseTodayDay)
+      : 0;
+
+  const phaseDateRangeLabel =
+    phaseBatch && phaseStartDay !== null && phaseEndDay !== null
+      ? `${formatBatchDate(phaseBatch.tanggalMulai)} – ${formatBatchDate(
+          phaseBatch.tanggalSelesai || phaseBatch.tanggalMulai
+        )}`
+      : 'Jadwal batch belum tersedia';
+
+  const phaseBatchName = phaseBatch
+    ? ((phaseBatch.namaBatch || '').split(' - ')[0] ||
+       phaseBatch.batchId)
+    : 'Belum Ada Batch';
+
+  const phaseStatusLabel =
+    phaseState === 'MENDATANG' ? 'Akan Datang' :
+    phaseState === 'BERLANGSUNG' ? 'Berlangsung' :
+    phaseState === 'SELESAI' ? 'Selesai' :
+    'Belum Ada Batch';
+
+  const phaseCountdownLabel =
+    phaseState === 'MENDATANG'
+      ? `Mulai dalam ${phaseDaysUntilStart} hari`
+      : phaseState === 'BERLANGSUNG'
+        ? phaseDaysUntilEnd === 0
+          ? 'Hari terakhir batch'
+          : `Sisa ${phaseDaysUntilEnd} hari`
+        : phaseState === 'SELESAI'
+          ? `Berakhir ${formatBatchDate(
+              phaseBatch?.tanggalSelesai ||
+              phaseBatch?.tanggalMulai
+            )}`
+          : 'Tambahkan batch di menu Batch';
+
 
   // Santri yang difokuskan pada Dashboard adalah santri di Batch yang terpilih/aktif hari ini
   const pesertaInBatch = currentBatch ? pesertaList.filter((p) => p.batchId === currentBatch.batchId) : pesertaList;
@@ -442,7 +614,9 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
   };
 
   // Santri Terpilih untuk Tab Absen Per Santri
-  const selectedSantri = pesertaInBatch.find((p) => p.pesertaId === selectedSantriId) || pesertaInBatch[0];
+  const selectedSantri = selectedSantriId
+    ? pesertaList.find((p) => p.pesertaId === selectedSantriId) || null
+    : null;
   const absensiSelectedSantri = selectedSantri
     ? absensiList.filter((a) => a.pesertaId === selectedSantri.pesertaId)
     : [];
@@ -549,9 +723,9 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
                 <div className="min-w-0">
                   <h4 className="font-bold text-xs text-slate-800 leading-tight truncate">{m.nama}</h4>
                   <p className="text-[10px] text-slate-500 mt-0.5 font-semibold flex items-center gap-1.5 truncate">
-                    <span className="font-mono text-emerald-800 font-bold">{m.nim || '200125016'}</span>
+                    <span className="font-mono text-emerald-800 font-bold">{m.nim || '-'}</span>
                     <span className="text-slate-300">•</span>
-                    <span>{m.jurusan || 'S1 DKV'}</span>
+                    <span>{m.jurusan || (m.gender === 'AKHWAT' ? 'Musyrifah' : 'Musyrif')}</span>
                   </p>
                 </div>
               </div>
@@ -899,40 +1073,94 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
             </div>
           </div>
 
-          {/* TILE 3: FASE BIMBINGAN BATCH AKTIF */}
+          {/* TILE 3: COUNTDOWN & PROGRES WAKTU BATCH */}
           <div className="bg-white rounded-xl sm:rounded-[28px] p-2.5 sm:p-5 shadow-[4px_8px_16px_rgba(180,205,190,0.25)] border border-slate-100 flex flex-col justify-between">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <div className="w-7 h-7 sm:w-11 sm:h-11 rounded-lg sm:rounded-2xl bg-[#0d9488] text-white flex items-center justify-center shadow-xs">
                 <Calendar className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
               </div>
-              <span className="text-[9px] sm:text-[11px] font-bold text-teal-600 truncate">
-                {batches[0]?.namaBatch.split(' - ')[0] || 'Batch 1'}
+              <span className="text-[9px] sm:text-[11px] font-bold text-teal-600 truncate max-w-[100px] sm:max-w-[140px]">
+                {phaseBatchName}
               </span>
             </div>
 
-            <div className="mt-2 sm:mt-4">
-              <h4 className="font-extrabold text-[11px] sm:text-sm text-slate-800 leading-tight truncate">
-                Fase Bimbingan
+            <div className="mt-2 sm:mt-4 min-w-0">
+              <h4 className="font-extrabold text-[11px] sm:text-sm text-slate-800 leading-tight">
+                Countdown & Progres Batch
               </h4>
-              <p className="text-[9px] sm:text-[11px] text-slate-400 mt-0.5 truncate">
-                {batches[0]?.agendaKalender[2]?.namaAgenda || 'Masa Pesma'}
+              <p
+                className="text-[9px] sm:text-[11px] text-slate-400 mt-0.5 truncate"
+                title={phaseDateRangeLabel}
+              >
+                {phaseDateRangeLabel}
               </p>
             </div>
 
             <div className="mt-2 sm:mt-4 space-y-1 sm:space-y-2">
-              <div className="hidden sm:flex items-center justify-between text-[11px] font-bold">
-                <span className="text-slate-500">Kelulusan</span>
-                <span className="text-[#0d9488]">94%</span>
+              <div className="flex items-center justify-between gap-2 text-[9px] sm:text-[11px] font-bold">
+                <span className="text-slate-500">Progres waktu</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[#0d9488] tabular-nums">
+                    {phaseProgressPct}%
+                  </span>
+                  {phaseBatch && (
+                    <span className="rounded-full bg-teal-50 px-2 py-0.5 text-[9px] font-bold text-teal-700">
+                      Target 100%
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="w-full h-1.5 sm:h-2 rounded-full bg-slate-100 overflow-hidden">
-                <div className="h-full bg-[#0d9488] rounded-full w-[94%]" />
+
+              <div
+                className="w-full h-1.5 sm:h-2 rounded-full bg-slate-100 overflow-hidden"
+                role="progressbar"
+                aria-label="Progres waktu batch"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={phaseProgressPct}
+              >
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    phaseState === 'MENDATANG'
+                      ? 'bg-amber-400'
+                      : phaseState === 'SELESAI'
+                        ? 'bg-emerald-500'
+                        : 'bg-[#0d9488]'
+                  }`}
+                  style={{ width: `${phaseProgressPct}%` }}
+                />
               </div>
-              <div className="flex items-center justify-between pt-0.5 sm:pt-1 text-[9px] sm:text-[10px] font-semibold text-slate-500">
-                <span className="font-bold text-slate-800">Target 95%</span>
-                <span className="hidden sm:inline bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full font-bold">
-                  Syahadah
+
+              <div className="flex items-center justify-between gap-2 pt-0.5 sm:pt-1 text-[9px] sm:text-[10px] font-semibold text-slate-500">
+                <span
+                  className="font-bold text-slate-800 truncate"
+                  title={phaseCountdownLabel}
+                >
+                  {phaseCountdownLabel}
+                </span>
+                <span className={`hidden sm:inline px-2 py-0.5 rounded-full font-bold shrink-0 ${
+                  phaseState === 'MENDATANG'
+                    ? 'bg-amber-50 text-amber-700'
+                    : phaseState === 'SELESAI'
+                      ? 'bg-slate-100 text-slate-700'
+                      : phaseState === 'BERLANGSUNG'
+                        ? 'bg-emerald-50 text-emerald-700'
+                        : 'bg-slate-100 text-slate-600'
+                }`}>
+                  {phaseStatusLabel}
                 </span>
               </div>
+
+              {phaseBatch && (
+                <p className="text-[9px] text-slate-400 pt-0.5">
+                  {formatBatchDate(phaseBatch.tanggalMulai)} – {formatBatchDate(
+                    phaseBatch.tanggalSelesai || phaseBatch.tanggalMulai
+                  )}
+                  <span className="block mt-0.5">
+                    Progres berdasarkan waktu kalender, bukan kelulusan santri.
+                  </span>
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -1595,7 +1823,7 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
           </div>
 
           {/* Individual Dossier Card */}
-          {selectedSantri && (
+          {selectedSantri ? (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               {/* Santri Profile & Stats Card */}
               <div className="lg:col-span-4 bg-white rounded-[28px] p-6 border border-slate-200/70 shadow-xs space-y-5">
@@ -1712,6 +1940,14 @@ export const DashboardPage: React.FC<DashboardProps> = ({ onNavigate, onOpenScan
                   </table>
                 </div>
               </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500">
+              <Users className="mx-auto mb-2 h-8 w-8 text-slate-300" />
+              <h3 className="text-sm font-bold text-slate-700">Belum ada peserta dipilih</h3>
+              <p className="mt-1 text-xs">
+                Cari nama/NIM atau pindai QR peserta untuk menampilkan dossier kehadirannya.
+              </p>
             </div>
           )}
         </div>
