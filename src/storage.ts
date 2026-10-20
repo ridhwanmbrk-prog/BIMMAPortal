@@ -1252,7 +1252,16 @@ export function syncPetugasRosterFromAccounts(
 ): void {
   const existing = getItems<Musyrif>('MUSYRIF');
   const activeBefore = getActiveMusyrif();
-  const staffAccounts = accounts.filter((account) => account.role === 'PETUGAS');
+
+  // Profil tambahan/demo ini tidak boleh dibuat ulang oleh sinkronisasi akun.
+  const excludedRosterNames = new Set(['musyrif pesma', 'musyrifah pesma']);
+  const isExcludedRosterName = (name: string) =>
+    excludedRosterNames.has(name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('id-ID'));
+
+  const staffAccounts = accounts.filter((account) => {
+    const accountName = String(account.namaLengkap || account.username).trim();
+    return account.role === 'PETUGAS' && !isExcludedRosterName(accountName);
+  });
   const staffIds = new Set(staffAccounts.map((account) => account.id));
   let updated = [...existing];
 
@@ -1301,6 +1310,9 @@ export function syncPetugasRosterFromAccounts(
   // Bersihkan profil otomatis hanya jika akunnya sudah tidak berperan PETUGAS.
   // Baris manual yang tidak tertaut tidak ikut terhapus.
   updated = updated.filter((item) => {
+    // Hapus juga profil lama yang sudah telanjur dibuat sebelum pengecualian ini.
+    if (isExcludedRosterName(item.nama)) return false;
+
     const linkedAccountId =
       item.akunUserId ||
       (item.id.startsWith('ACCOUNT_USER_')
