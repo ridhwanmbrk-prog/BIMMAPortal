@@ -1,4 +1,4 @@
-import { getBusinessDateString } from '../utils/date';
+import { getBusinessDateString, getBusinessTimeMinutes } from '../utils/date';
 import { isScheduleApplicableOnDate } from '../utils/schedule';
 import React, { useState, useEffect } from 'react';
 import {
@@ -35,6 +35,13 @@ export const LaporanHarianAlfaPage: React.FC = () => {
 
   const todayStr = getBusinessDateString();
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const [reportClock, setReportClock] = useState<Date>(() => new Date());
+
+  // Perbarui status laporan berkala agar otomatis aktif saat jendela scan dibuka.
+  useEffect(() => {
+    const timer = window.setInterval(() => setReportClock(new Date()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const jadwalUntukTanggal = jadwalList.filter((j) =>
     isScheduleApplicableOnDate(j, selectedDate)
   );
@@ -91,10 +98,51 @@ export const LaporanHarianAlfaPage: React.FC = () => {
 
   const selectedJadwal = jadwalUntukTanggal.find((j) => j.jadwalId === selectedJadwalId);
 
+  // Laporan hanya berlaku jika jadwal wajib tersedia dan jendela scan sudah dibuka.
+  const attendanceReportReady = (() => {
+    if (!selectedJadwal || !selectedJadwal.wajib) return false;
+
+    // Jadwal pada tanggal lampau tetap dapat dilihat sebagai laporan historis.
+    if (selectedDate < todayStr) return true;
+    if (selectedDate > todayStr) return false;
+
+    const [startHour, startMinute] = selectedJadwal.jamMulai.split(':').map(Number);
+    if (
+      !Number.isInteger(startHour) || startHour < 0 || startHour > 23 ||
+      !Number.isInteger(startMinute) || startMinute < 0 || startMinute > 59
+    ) return false;
+
+    const startAt = startHour * 60 + startMinute;
+    const configuredTolerance = Number(selectedJadwal.toleransiBukaAwal);
+    const openingTolerance = Number.isFinite(configuredTolerance)
+      ? Math.max(0, configuredTolerance)
+      : 15;
+    const scanOpensAt = Math.max(0, startAt - openingTolerance);
+
+    return getBusinessTimeMinutes(reportClock) >= scanOpensAt;
+  })();
+
+  // Tanggal lampau diperlakukan sebagai laporan historis yang sudah melewati tenggat.
+  // Untuk hari ini, peserta baru diklasifikasikan Alfa mulai pukul 22.00 WIB.
+  const alfaDeadlineReached =
+    attendanceReportReady &&
+    (
+      selectedDate < todayStr ||
+      (
+        selectedDate === todayStr &&
+        getBusinessTimeMinutes(reportClock) >= 22 * 60
+      )
+    );
+
   // Ambil data absensi dan izin untuk tanggal dan jadwal terpilih
-  const absensiHariIni = absensiList.filter(
-    (a) => a.tanggal === selectedDate && (a.jadwalId === selectedJadwalId || (selectedJadwal && a.namaKegiatan.toLowerCase() === selectedJadwal.namaKegiatan.toLowerCase()))
-  );
+  const absensiHariIni = attendanceReportReady
+    ? absensiList.filter(
+        (a) => a.tanggal === selectedDate && (
+          a.jadwalId === selectedJadwalId ||
+          (selectedJadwal && a.namaKegiatan.toLowerCase() === selectedJadwal.namaKegiatan.toLowerCase())
+        )
+      )
+    : [];
 
   const hadirPesertaIds = new Set(
     absensiHariIni.filter((a) => a.statusAbsensi === 'HADIR').map((a) => a.pesertaId)
@@ -115,10 +163,12 @@ export const LaporanHarianAlfaPage: React.FC = () => {
     const tglSelesai = iz.waktuSelesai.split('T')[0];
     return selectedDate >= tglMulai && selectedDate <= tglSelesai;
   });
-  approvedIzinHariIni.forEach((iz) => izinPesertaIds.add(iz.pesertaId));
+  if (attendanceReportReady) {
+    approvedIzinHariIni.forEach((iz) => izinPesertaIds.add(iz.pesertaId));
+  }
 
   // Santri yang BELUM ABSEN (Tidak hadir dan tidak izin)
-  const belumAbsenList = pesertaList.filter((p) => {
+  const belumAbsenList = attendanceReportReady ? pesertaList.filter((p) => {
     const isHadir = hadirPesertaIds.has(p.pesertaId);
     const isIzin = izinPesertaIds.has(p.pesertaId);
     const matchBatch = filterBatch === 'ALL' || p.batchId === filterBatch;
@@ -127,9 +177,9 @@ export const LaporanHarianAlfaPage: React.FC = () => {
       p.nim.includes(searchQuery);
 
     return !isHadir && !isIzin && matchBatch && matchQuery;
-  });
+  }) : [];
 
-  const totalSantri = pesertaList.length;
+  const totalSantri = attendanceReportReady ? pesertaList.length : 0;
   const totalHadir = hadirPesertaIds.size;
   const totalIzin = izinPesertaIds.size;
   const totalBelumHadir = belumAbsenList.length;
@@ -230,6 +280,9 @@ export const LaporanHarianAlfaPage: React.FC = () => {
               onChange={(e) => setSelectedJadwalId(e.target.value)}
               className="text-xs font-bold bg-transparent text-slate-700 focus:outline-none cursor-pointer"
             >
+              {jadwalUntukTanggal.length === 0 && (
+                <option value="">Tidak ada jadwal untuk tanggal ini</option>
+              )}
               {jadwalUntukTanggal.map((j) => (
                 <option key={j.jadwalId} value={j.jadwalId}>
                   {j.namaKegiatan} ({j.jamMulai} - {j.jamSelesai} WIB)
@@ -288,9 +341,15 @@ export const LaporanHarianAlfaPage: React.FC = () => {
         </div>
 
         <div className="bg-rose-50/70 p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-rose-200 shadow-xs">
-          <p className="text-[10px] sm:text-[11px] font-bold text-rose-700">Belum Hadir (Alfa)</p>
-          <p className="text-lg sm:text-xl font-black text-rose-700 mt-0.5">{totalBelumHadir}</p>
-          <span className="text-[9px] sm:text-[10px] text-rose-600 font-bold">Perlu Tindak Lanjut</span>
+          <p className={`text-[10px] sm:text-[11px] font-bold ${alfaDeadlineReached ? 'text-rose-700' : 'text-amber-700'}`}>
+            {alfaDeadlineReached ? 'Belum Hadir (Alfa)' : 'Belum Absen (Verifikasi)'}
+          </p>
+          <p className={`text-lg sm:text-xl font-black mt-0.5 ${alfaDeadlineReached ? 'text-rose-700' : 'text-amber-700'}`}>
+            {totalBelumHadir}
+          </p>
+          <span className={`text-[9px] sm:text-[10px] font-bold ${alfaDeadlineReached ? 'text-rose-600' : 'text-amber-600'}`}>
+            {alfaDeadlineReached ? 'Tenggat verifikasi terlewati' : 'Tenggat verifikasi 22.00 WIB'}
+          </span>
         </div>
       </div>
 
@@ -300,12 +359,16 @@ export const LaporanHarianAlfaPage: React.FC = () => {
           <div className="flex items-center gap-2 min-w-0">
             <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
             <h3 className="font-extrabold text-xs sm:text-sm text-slate-800 truncate">
-              Daftar Santri Belum Hadir — {selectedJadwal?.namaKegiatan || 'Kegiatan'}
+              Daftar Santri Belum Hadir — {selectedJadwal?.namaKegiatan || 'Belum Ada Jadwal'}
             </h3>
           </div>
           <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
-            <span className="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] sm:text-[11px] font-black border border-rose-200">
-              {belumAbsenList.length} Santri Tertinggal
+            <span className={`px-2.5 py-0.5 rounded-full text-[10px] sm:text-[11px] font-black border ${
+              alfaDeadlineReached
+                ? 'bg-rose-100 text-rose-800 border-rose-200'
+                : 'bg-amber-100 text-amber-800 border-amber-200'
+            }`}>
+              {belumAbsenList.length} {alfaDeadlineReached ? 'Santri Alfa' : 'Belum Absen'}
             </span>
             <span className="text-[10px] text-slate-400 font-semibold font-mono hidden sm:inline">
               ({selectedDate})
@@ -326,7 +389,28 @@ export const LaporanHarianAlfaPage: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-medium">
-              {belumAbsenList.length === 0 ? (
+              {!selectedJadwal ? (
+                <tr>
+                  <td colSpan={6} className="p-6 sm:p-10 text-center text-slate-600">
+                    <Calendar className="w-8 h-8 mx-auto mb-1.5 text-slate-400" />
+                    <p className="font-extrabold text-xs sm:text-sm">Belum Ada Jadwal Presensi</p>
+                    <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5">
+                      Tidak ada jadwal kegiatan aktif untuk tanggal {selectedDate}.
+                      Laporan akan tersedia setelah jadwal yang berlaku dipilih.
+                    </p>
+                  </td>
+                </tr>
+              ) : !attendanceReportReady ? (
+                <tr>
+                  <td colSpan={6} className="p-6 sm:p-10 text-center text-slate-600">
+                    <Clock className="w-8 h-8 mx-auto mb-1.5 text-slate-400" />
+                    <p className="font-extrabold text-xs sm:text-sm">Pengabsenan Belum Dimulai</p>
+                    <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5">
+                      Daftar belum hadir akan aktif saat jendela scan dibuka untuk {selectedJadwal.namaKegiatan}.
+                    </p>
+                  </td>
+                </tr>
+              ) : belumAbsenList.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="p-6 sm:p-10 text-center text-emerald-700">
                     <CheckCircle2 className="w-8 h-8 mx-auto mb-1.5 text-emerald-500" />
@@ -338,7 +422,12 @@ export const LaporanHarianAlfaPage: React.FC = () => {
                 </tr>
               ) : (
                 belumAbsenList.map((s) => (
-                  <tr key={s.pesertaId} className="hover:bg-rose-50/30 transition">
+                  <tr
+                    key={s.pesertaId}
+                    className={`transition ${
+                      alfaDeadlineReached ? 'hover:bg-rose-50/30' : 'hover:bg-amber-50/30'
+                    }`}
+                  >
                     <td className="p-2.5 sm:p-3.5 pl-3 sm:pl-5 font-mono font-bold text-slate-600 text-[11px] sm:text-xs">{s.nim}</td>
                     <td className="p-2.5 sm:p-3.5 font-bold text-slate-800 text-[11px] sm:text-xs">{s.namaLengkap}</td>
                     <td className="p-2.5 sm:p-3.5 text-slate-600 text-[10px] sm:text-xs">{s.programStudi}</td>
@@ -348,9 +437,13 @@ export const LaporanHarianAlfaPage: React.FC = () => {
                       </span>
                     </td>
                     <td className="p-2.5 sm:p-3.5">
-                      <span className="px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full bg-rose-100 text-rose-700 font-black text-[9px] sm:text-[10px] inline-flex items-center gap-1">
+                      <span className={`px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full font-black text-[9px] sm:text-[10px] inline-flex items-center gap-1 ${
+                        alfaDeadlineReached
+                          ? 'bg-rose-100 text-rose-700'
+                          : 'bg-amber-100 text-amber-800'
+                      }`}>
                         <AlertCircle className="w-3 h-3" />
-                        <span>BELUM ABSEN</span>
+                        <span>{alfaDeadlineReached ? 'ALFA' : 'MENUNGGU VERIFIKASI'}</span>
                       </span>
                     </td>
                     <td className="p-2.5 sm:p-3.5 pr-3 sm:pr-5 text-right space-x-1 sm:space-x-1.5 whitespace-nowrap">
